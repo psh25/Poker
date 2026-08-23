@@ -1,0 +1,6 @@
+# PlatformIO 生成物（不提交 GitHub）
+.pio/
+.pioenvs/
+.pioide/
+.vscode/
+compile_commands.json

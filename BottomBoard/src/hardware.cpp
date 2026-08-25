@@ -15,23 +15,6 @@ static volatile bool g_tmc_stall = false;
 bool tmc_stall_flag(void);
 bool tmc_stall_flag(void) { return g_tmc_stall; }
 
-// ---- 编码器 ISR：5ms 消抖，事件入队列（架构 v2 8.1）----
-static void IRAM_ATTR encoder_isr(void) {
-    static uint32_t last = 0;
-    uint32_t now = millis();
-    if (now - last < ENCODER_DEBOUNCE_MS) return;
-    last = now;
-
-    encoder_event_t evt;
-    evt.direction = (digitalRead(PIN_ENC_B) == HIGH) ? 1 : -1;  // TODO: 按正交时序核对
-    evt.pressed   = (digitalRead(PIN_ENC_SW) == LOW);
-    evt.timestamp = now;
-
-    BaseType_t woken = pdFALSE;
-    xQueueSendFromISR(xEncoderQueue, &evt, &woken);
-    if (woken) portYIELD_FROM_ISR();
-}
-
 // ---- TMC DIAG 堵转中断：紧急断电（架构 v2 8.2）----
 static void IRAM_ATTR diag_isr(void) {
     g_tmc_stall = true;
@@ -80,7 +63,6 @@ void init_hardware(void) {
 
 void init_interrupts(void) {
     // 必须在 create_itc() 之后调用，确保 xEncoderQueue 已创建
-    attachInterrupt(digitalPinToInterrupt(PIN_ENC_A), encoder_isr, CHANGE);
     attachInterrupt(digitalPinToInterrupt(PIN_TMC_DIAG), diag_isr, CHANGE); // TODO: 按实际电平极性配置
 }
 

@@ -39,8 +39,11 @@ void state_transition_to(system_state_t next) {
     // 状态变化 → 屏幕（架构 v2 附录 A 生产者映射）
     display_cmd_t cmd = {};
     switch (next) {
-    case STATE_IDLE:      cmd.type = DISPLAY_CMD_MENU;        break;
-    case STATE_SELECTING: cmd.type = DISPLAY_CMD_MENU;        break;
+    case STATE_IDLE:
+    case STATE_SELECTING:
+        cmd.type = DISPLAY_CMD_MENU;
+        cmd.payload.menu.selectedIndex = display_get_selected();   // 保留当前选中项
+        break;
     case STATE_DEALING:   cmd.type = DISPLAY_CMD_DEALING;
                           cmd.payload.dealing.progress = 0;
                           strncpy(cmd.payload.dealing.status, "发牌中", sizeof(cmd.payload.dealing.status));

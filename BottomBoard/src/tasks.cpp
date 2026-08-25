@@ -10,6 +10,7 @@
  *   - 监控：低(1)，500ms 周期巡检
  */
 #include <Arduino.h>
+#include <stdio.h>
 #include <string.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -148,44 +149,121 @@ void vDealTask(void *pv) {
 
 // ================= 编码器处理任务 =================
 void vEncoderTask(void *pv) {
-    // 中(2) | 任意核心 | 中断 + 队列（ISR 已做 5ms 消抖）
-    encoder_event_t evt;
-    for (;;) {
-        if (xQueueReceive(xEncoderQueue, &evt, portMAX_DELAY) != pdPASS) continue;
+    // 中(2) | 任意核心
+    // 旋转：1ms 轮询 A/B 相做四态正交解码，累计满一整格（4 次有效跳变）才计一步，抗抖动/噪声
+    // 按键：SW 中断入队；短按确认，长按(>2s)取消返回
+    int8_t selection = 0;
+    uint32_t press_start = 0;
+    bool press_active = false;
 
-        if (evt.pressed) {
+    uint8_t prev_state = 0xFF;   // 上次 A/B 组合状态（A<<1|B）
+    int8_t quad_accum = 0;       // 同方向累计有效跳变（满 ±4 = 一格）
+    uint8_t prev_sw = 0xFF;      // SW 状态：0=按下(低)，1=松开
+    uint32_t sw_last_change = 0; // SW 最近一次状态变化时间（10ms 消抖）
+
+    Serial.printf("[ENC] A=%d B=%d SW=%d\n",
+                  digitalRead(PIN_ENC_A), digitalRead(PIN_ENC_B),
+                  digitalRead(PIN_ENC_SW));
+
+    for (;;) {
+        // 1) 轮询按键 SW（10ms 消抖）：按下为低电平
+        uint8_t sw = (digitalRead(PIN_ENC_SW) == LOW) ? 0 : 1;
+        uint32_t now_ms = millis();
+        if (sw != prev_sw && (now_ms - sw_last_change) >= 10) {
+            sw_last_change = now_ms;
+            prev_sw = sw;
             system_state_t s = state_get_current();
-            if (s == STATE_SELECTING) {
-                xSemaphoreGive(xDealSemaphore);                       // 确认发牌
-                xEventGroupSetBits(xStateEventGroup, BIT_USER_INPUT); // SELECTING→DEALING
-            } else if (s == STATE_GAME_END) {
-                xEventGroupSetBits(xStateEventGroup, BIT_RESET);      // GAME_END→IDLE
-            } else if (s == STATE_IDLE) {
-                xEventGroupSetBits(xStateEventGroup, BIT_RESET);      // TODO: 复位牌堆数据
-            }
-            // TODO: 长按（>2s）取消选择 → BIT_CANCEL（需 SW 独立中断或周期轮询）
-        } else {
-            // 旋转：切换方案索引 + 屏幕高亮
-            display_cmd_t cmd = {};
-            cmd.type = DISPLAY_CMD_SELECT;
-            cmd.payload.menu.selectedIndex = 0;   // TODO: 随 evt.direction 增减
-            send_display_command(&cmd);
-            if (state_get_current() == STATE_IDLE) {
-                xEventGroupSetBits(xStateEventGroup, BIT_USER_INPUT); // IDLE→SELECTING
+
+            if (sw == 0) {
+                // 按下
+                Serial.println("[ENC] SW press");
+                if (s == STATE_SELECTING || s == STATE_GAME_END) {
+                    press_start = now_ms;
+                    press_active = true;
+                }
+            } else {
+                // 松开：短按确认 / 长按取消
+                if (!press_active) continue;
+                press_active = false;
+
+                uint32_t held = now_ms - press_start;
+                if (held >= ENCODER_LONG_PRESS_MS) {
+                    if (s == STATE_SELECTING) {
+                        Serial.println("[ENC] cancel");
+                        send_display_debug("Cancelled");
+                        xEventGroupSetBits(xStateEventGroup, BIT_CANCEL);
+                    }
+                } else {
+                    if (s == STATE_SELECTING) {
+                        Serial.printf("[ENC] confirm scheme %d\n", selection + 1);
+                        char msg[32];
+                        snprintf(msg, sizeof(msg), "Selected: %d", selection + 1);
+                        send_display_debug(msg);
+                        xSemaphoreGive(xDealSemaphore);                       // 确认发牌
+                        xEventGroupSetBits(xStateEventGroup, BIT_USER_INPUT); // SELECTING→DEALING
+                    } else if (s == STATE_GAME_END) {
+                        xEventGroupSetBits(xStateEventGroup, BIT_RESET);      // GAME_END→IDLE
+                    } else if (s == STATE_IDLE) {
+                        xEventGroupSetBits(xStateEventGroup, BIT_USER_INPUT); // IDLE→SELECTING
+                    }
+                }
             }
         }
-        busy_encoder(evt.pressed ? 1 : 0);
+
+        // 2) 1ms 轮询 A/B 相正交解码
+        uint8_t st = (digitalRead(PIN_ENC_A) ? 2 : 0) | (digitalRead(PIN_ENC_B) ? 1 : 0);
+        if (st != prev_state) {
+            if (prev_state != 0xFF) {
+                int8_t d = 0;
+                switch ((prev_state << 2) | st) {
+                    case 0b0001: case 0b0111: case 0b1110: case 0b1000: d = +1; break;
+                    case 0b0010: case 0b0100: case 0b1101: case 0b1011: d = -1; break;
+                    default: quad_accum = 0; break;   // 非法跳变（噪声）→ 清零
+                }
+                quad_accum += d;
+
+                if (quad_accum >= 4) {
+                    quad_accum = 0;
+                    selection = (int8_t)((selection + 1 + SCHEME_COUNT) % SCHEME_COUNT);
+                    Serial.printf("[ENC] rot +1 sel=%d\n", selection + 1);
+                    display_set_selected((uint8_t)selection);
+                    display_cmd_t cmd = {};
+                    cmd.type = DISPLAY_CMD_SELECT;
+                    cmd.payload.menu.selectedIndex = (uint8_t)selection;
+                    send_display_command(&cmd);
+                    if (state_get_current() == STATE_IDLE) {
+                        xEventGroupSetBits(xStateEventGroup, BIT_USER_INPUT); // IDLE→SELECTING
+                    }
+                } else if (quad_accum <= -4) {
+                    quad_accum = 0;
+                    selection = (int8_t)((selection - 1 + SCHEME_COUNT) % SCHEME_COUNT);
+                    Serial.printf("[ENC] rot -1 sel=%d\n", selection + 1);
+                    display_set_selected((uint8_t)selection);
+                    display_cmd_t cmd = {};
+                    cmd.type = DISPLAY_CMD_SELECT;
+                    cmd.payload.menu.selectedIndex = (uint8_t)selection;
+                    send_display_command(&cmd);
+                    if (state_get_current() == STATE_IDLE) {
+                        xEventGroupSetBits(xStateEventGroup, BIT_USER_INPUT); // IDLE→SELECTING
+                    }
+                }
+            }
+            prev_state = st;
+        }
+
+        // 3) 让出 CPU（约 1ms 周期）
+        vTaskDelay(pdMS_TO_TICKS(1));
     }
 }
 
 // ================= 屏幕显示任务 =================
 void vDisplayTask(void *pv) {
     // 低(1) | 任意核心 | 队列触发（事件驱动，非轮询）
-    // TODO: 屏幕初始化（TFT_eSPI，ILI9341 320×240，与 SD 共用 SPI）
+    display_init();   // 初始化屏幕（ILI9341，320x240）
     display_cmd_t cmd;
     for (;;) {
         if (xQueueReceive(xDisplayQueue, &cmd, portMAX_DELAY) == pdPASS) {
-            busy_display((uint8_t)cmd.type);
+            display_handle_command(&cmd);
         }
     }
 }

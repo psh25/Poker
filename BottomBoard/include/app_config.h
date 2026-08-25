@@ -39,6 +39,9 @@
 #define QUEUE_CAMERA_LEN   20   // 牌面识别结果
 #define QUEUE_DISPLAY_LEN  5    // 屏幕显示命令（事件驱动）
 
+// ================= 发牌方案（占位：方案 1~4，具体方案待定）=================
+#define SCHEME_COUNT        4
+
 // ================= 时序 / 超时（ms）=================
 #define ENCODER_DEBOUNCE_MS    5     // 编码器消抖（架构 v2 异常处理 8.1）
 #define ENCODER_LONG_PRESS_MS  2000  // 编码器长按取消（>2s）

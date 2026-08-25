@@ -75,9 +75,9 @@ DealerMachine/
 ## 开发环境
 
 - VSCode + PlatformIO 插件
-- 打开 `BottomBoard/` 目录即可构建上传；开发板选型 `esp32s3box`
+- 打开 `BottomBoard/` 目录即可构建上传；板卡与烧录参数统一在 `platformio.ini` 中（当前为 `esp32-s3-devkitc-1`，16MB Flash / PSRAM 编译参数）
 - 调试串口（CH340 / UART0）115200 波特率，日志从 `Serial` 输出
-- 屏幕 / SD 驱动计划使用 TFT_eSPI、SdFat（已配置 `lib_extra_dirs` 指向本机 Arduino 库）
+- 屏幕 / SD 驱动后续通过 `lib_deps` 声明（如 TFT_eSPI、SdFat），无需依赖本机 Arduino 库目录
 
 ## 当前状态与 TODO
 

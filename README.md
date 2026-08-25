@@ -12,7 +12,7 @@ DealerMachine/
 │   ├── architecture_v2_diff.md# v1 → v2 区别总结与待审核项
 │   └── subboard_architecture.md  # 子板裸机架构
 ├── BottomBoard/               # 底板 PlatformIO 项目（ESP32-S3，Arduino + FreeRTOS）
-└── SubBoard/                  # 子板 PlatformIO 项目（待创建）
+└── SubBoard/                  # 子板 PlatformIO 项目（ESP32-S3，裸机超级循环 + 中断）
 ```
 
 ## 硬件概览
@@ -88,7 +88,7 @@ DealerMachine/
 - [ ] 霍尔两段式归零与失步校准
 - [ ] 屏幕 / SD 驱动（TFT_eSPI + SdFat）
 - [ ] 蓝牙（BLE）与小程序协议
-- [ ] 子板 `SubBoard/` PlatformIO 项目（按 `docs/subboard_architecture.md`）
+- [x] 子板 `SubBoard/` PlatformIO 项目框架（按 `docs/subboard_architecture.md`）
 - [ ] 板间协议帧定稿与联调
 
 ## 注意事项

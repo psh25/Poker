@@ -75,7 +75,7 @@ void sub_state_run(void) {
             g_state = SUB_STATE_WAIT_CARD;
             g_state_start_ms = now;
         }
-        // TODO: 电流检测 → 堵转立即 sub_mark_error(ERROR_MOTOR_STALL)
+        // TODO: 电流检测 → 堵转立即 sub_mark_error(EVT_ERROR_MOTOR_STALL)
         break;
 
     case SUB_STATE_WAIT_CARD:
@@ -87,7 +87,7 @@ void sub_state_run(void) {
             g_state = SUB_STATE_CAM_CAPTURE;
             g_state_start_ms = now;                // 开始 2s 识别超时
         } else if (now - g_state_start_ms >= PHOTO_TIMEOUT_MS) {
-            sub_mark_error(ERROR_CARD_JAM);        // 500ms 未检测到牌 → 卡牌/漏发
+            sub_mark_error(EVT_ERROR_CARD_JAM);    // 500ms 未检测到牌 → 卡牌/漏发
         }
         break;
 
@@ -97,7 +97,7 @@ void sub_state_run(void) {
             g_state = SUB_STATE_SEND_BACK;
         } else if (now - g_state_start_ms >= CAMERA_TIMEOUT_MS) {
             // 2s 超时 → 该张按未知牌处理并上报（架构 8.1）
-            proto_send(ERROR_CAM_FAIL, NULL, 0);
+            proto_send(EVT_ERROR_CAM_FAIL, NULL, 0);
             g_state = SUB_STATE_SEND_BACK;
         }
         break;

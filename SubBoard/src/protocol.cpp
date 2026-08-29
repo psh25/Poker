@@ -80,5 +80,25 @@ void proto_rx_byte(uint8_t b) {
 
 // 完整命令分发 → 子板状态机
 void proto_on_command(const proto_frame_t *frame) {
+    // 调试①：收到并解析完整命令 → 串口打印 + 回发 ACK（原 type + 原 data 回显）
+    Serial.printf("[SUB] RX: cmd=0x%02X len=%u data:", frame->type, frame->len);
+    for (uint8_t i = 0; i < frame->len; i++) {
+        Serial.printf(" %02X", frame->data[i]);
+    }
+    Serial.println();
+
+    uint8_t ack[PROTO_MAX_DATA];
+    ack[0] = frame->type;
+    uint8_t ackLen = 1;
+    uint8_t copyLen = (frame->len < PROTO_MAX_DATA - 1) ? frame->len : (PROTO_MAX_DATA - 1);
+    if (copyLen) memcpy(&ack[1], frame->data, copyLen);
+    ackLen += copyLen;
+
+    if (proto_send(EVT_ACK, ack, ackLen)) {
+        Serial.printf("[SUB] TX: ACK cmd=0x%02X len=%u\n", frame->type, ackLen);
+    } else {
+        Serial.println("[SUB] TX: ACK send FAILED");
+    }
+
     sub_state_handle_command(frame->type, frame->data, frame->len);
 }

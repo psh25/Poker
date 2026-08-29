@@ -76,7 +76,7 @@ stateDiagram-v2
 | IDLE → MOTOR_ON | 收到 `CMD_DEAL_START` | 启动发牌电机；启动 500ms 超时定时器 |
 | MOTOR_ON → WAIT_CARD | 电机启动完成 | 等待光敏触发 |
 | WAIT_CARD → CAM_CAPTURE | 光敏中断标志置位 | 停止电机；触发摄像头拍照 |
-| WAIT_CARD → ERROR | 500ms 未检测到牌 | 停止电机；上报 `ERROR_CARD_JAM` |
+| WAIT_CARD → ERROR | 500ms 未检测到牌 | 停止电机；上报 `EVT_ERROR_CARD_JAM` |
 | CAM_CAPTURE → SEND_BACK | 识别完成 | 组装 `EVT_CARD_VALUE`（含未知牌标志） |
 | SEND_BACK → IDLE | 事件帧发送完成 | 清空单卡缓冲，回到待命 |
 | ERROR → IDLE | 收到底板复位/重试指令 | 复位状态机，重新待命 |
@@ -124,9 +124,9 @@ stateDiagram-v2
 | `EVT_CARD_OUT` | 成功标志 | 光敏检测到一张牌发出 |
 | `EVT_CARD_VALUE` | 牌序号、花色、点数、未知牌标志 | 牌面识别结果 |
 | `EVT_DEAL_DONE` | — | 单张发牌流程完成 |
-| `ERROR_CARD_JAM` | 超时值 | 光敏超时/卡牌，**立即上报** |
-| `ERROR_MOTOR_STALL` | 电流/时间 | 发牌电机堵转（如支持检测） |
-| `ERROR_CAM_FAIL` | 错误码 | 摄像头识别失败（该张标记为未知牌） |
+| `EVT_ERROR_CARD_JAM` | 超时值 | 光敏超时/卡牌，**立即上报** |
+| `EVT_ERROR_MOTOR_STALL` | 电流/时间 | 发牌电机堵转（如支持检测） |
+| `EVT_ERROR_CAM_FAIL` | 错误码 | 摄像头识别失败（该张标记为未知牌） |
 
 ### 5.5 实时上报原则（重点）
 
@@ -145,8 +145,8 @@ stateDiagram-v2
 
 | 检查类型 | 谁检测 | 上报时机 | 底板决策 |
 |----------|--------|----------|----------|
-| 光敏超时/卡牌 | 子板（500ms 定时器） | 立即发 `ERROR_CARD_JAM` | 标记疑似漏发，决定重试一次或暂停报警 |
-| 发牌电机堵转 | 子板（电流检测/超时） | 立即发 `ERROR_MOTOR_STALL` | 停止或急停，进入错误状态 |
+| 光敏超时/卡牌 | 子板（500ms 定时器） | 立即发 `EVT_ERROR_CARD_JAM` | 标记疑似漏发，决定重试一次或暂停报警 |
+| 发牌电机堵转 | 子板（电流检测/超时） | 立即发 `EVT_ERROR_MOTOR_STALL` | 停止或急停，进入错误状态 |
 | 摄像头识别失败 | 子板（2s 超时/识别置信度） | 该张标记“未知牌”，发 `EVT_CARD_VALUE` + 标志 | 记录异常，整局结束后向小程序报告 |
 | 串口掉线 | 子板/底板双方 | 本地超时处理 | 底板暂停发牌流程，等待链路恢复 |
 
@@ -181,7 +181,7 @@ void loop() {
             state = STATE_CAM_CAPTURE;
         } else if (timeout_expired) {
             stop_motor();
-            send_event(ERROR_CARD_JAM);
+            send_event(EVT_ERROR_CARD_JAM);
             state = STATE_ERROR;
         }
         break;

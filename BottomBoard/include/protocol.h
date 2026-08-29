@@ -8,6 +8,14 @@
  * 底板 ↔ 子板 UART 协议（架构 v2 第七章，草案）
  * 帧格式：0xA5 | type(1B) | len(1B) | data(len) | crc8(1B) | 0xAA
  * CRC 覆盖 type + len + data。
+ *
+ * type 分配：
+ *   0x01~0x0F  底板 → 子板：命令（已用 0x01~0x05）
+ *   0x81~0x8F  子板 → 底板：事件（已用 0x81~0x88，统一 EVT_ 前缀，错误事件为 EVT_ERROR_*）
+ *   其余 0x10~0x7F / 0x90~0xFF 预留
+ * 新增命令：两端 protocol.h 同步加枚举 → 子板 state_machine.cpp 加 case →
+ *          （可选）底板 CLI 加文本映射；帧结构 / CRC 无需修改。
+ * 数据长度 ≤ PROTO_MAX_DATA(32)；更大载荷需两端同步扩容或分帧。
  */
 
 #define PROTO_HEADER      0xA5
@@ -29,9 +37,10 @@ typedef enum {
     EVT_CARD_OUT      = 0x82,  // 光敏检测到一张牌发出
     EVT_CARD_VALUE    = 0x83,  // 牌面识别结果
     EVT_DEAL_DONE     = 0x84,  // 单张发牌流程完成
-    ERROR_CARD_JAM    = 0x85,  // 光敏超时/卡牌
-    ERROR_MOTOR_STALL = 0x86,  // 发牌电机堵转
-    ERROR_CAM_FAIL    = 0x87   // 摄像头识别失败
+    EVT_ERROR_CARD_JAM    = 0x85,  // 光敏超时/卡牌
+    EVT_ERROR_MOTOR_STALL = 0x86,  // 发牌电机堵转
+    EVT_ERROR_CAM_FAIL    = 0x87,  // 摄像头识别失败
+    EVT_ACK               = 0x88   // 收到命令的确认回执（data = 原 type + 原 data）
 } proto_evt_t;
 
 typedef struct {

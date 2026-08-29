@@ -36,7 +36,7 @@ v2 **不推翻 v1 的主体设计**，保留：5 状态状态机（IDLE / SELECT
 
 - 物理层：滑环差分串口，CRC 校验、短包分帧、掉线超时保护。
 - 原则：**子板 → 底板逐张实时上报，底板 → 小程序整局统一上传**。
-- 草案命令/事件表（`EVT_CARD_OUT`、`EVT_CARD_VALUE`、`ERROR_CARD_JAM` 等）。
+- 草案命令/事件表（`EVT_CARD_OUT`、`EVT_CARD_VALUE`、`EVT_ERROR_CARD_JAM` 等）。
 
 ### 3. 硬件落地（v1 完全没有硬件细节）
 

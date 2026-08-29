@@ -10,7 +10,8 @@ DealerMachine/
 ├── docs/                      # 架构设计文档（必读）
 │   ├── architecture_v2.md     # 整体架构 v2（底板 RTOS + 子板裸机）
 │   ├── architecture_v2_diff.md# v1 → v2 区别总结与待审核项
-│   └── subboard_architecture.md  # 子板裸机架构
+│   ├── subboard_architecture.md  # 子板裸机架构
+│   └── board_protocol.md      # 底板 ↔ 子板 UART 通信协议
 ├── BottomBoard/               # 底板 PlatformIO 项目（ESP32-S3，Arduino + FreeRTOS）
 └── SubBoard/                  # 子板 PlatformIO 项目（ESP32-S3，裸机超级循环 + 中断）
 ```
@@ -39,7 +40,8 @@ DealerMachine/
 
 - **底板：FreeRTOS 多任务**；**子板：裸机（超级循环 + 中断）**，子板是“带反馈的执行器”。
 - **通信原则**：子板 → 底板逐张实时上报（光敏/识别/异常），底板 → 小程序整局统一上传。
-- **板间协议**：`0xA5 | type | len | data | crc8 | 0xAA`，掉线超时保护。
+- **板间协议**：`0xA5 | type | len | data | crc8 | 0xAA`，掉线超时保护（详见 [board_protocol.md](docs/board_protocol.md)）。
+- **命令/事件命名**：命令统一 `CMD_*`，事件统一 `EVT_*`（错误事件为 `EVT_ERROR_*`）；CLI 别名 = 枚举名去前缀的小写（`status`、`dealdone`、`motorstall`）。
 - **状态机**：`IDLE → SELECTING → DEALING → GAME_ACTIVE → GAME_END → IDLE`，仅状态管理任务负责切换（单写者）。
 - **屏幕显示**：事件驱动（队列触发），非轮询，只展示不决策。
 

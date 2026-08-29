@@ -11,6 +11,7 @@
  */
 #include <Arduino.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -63,11 +64,181 @@ void vBluetoothTask(void *pv) {
     }
 }
 
+// ================= 调试 CLI：电脑串口 → 底板 / 子板 =================
+static void sub_debug_print_help(void) {
+    Serial.println("[CLI] help                         - 本帮助");
+    Serial.println("[CLI] state                        - 打印当前状态机状态");
+    Serial.println("[CLI] sub <cmd> [hex data...]      - 底板→子板（自动组帧+CRC）");
+    Serial.println("[CLI]      cmd: deal|stop|status|selftest|reset 或 hex，如 sub 0x03");
+    Serial.println("[CLI] sim <type> [hex data...]     - 模拟子板→底板事件（喂给协议分发）");
+    Serial.println("[CLI]      type: ready|cardout|cardvalue|dealdone|jam|motorstall|camfail|ack 或 hex");
+    Serial.println("[CLI] menu | select <n> | dealing <pct> - 底板屏幕测试");
+}
+
+static bool sub_debug_hex_val(char c, uint8_t *v) {
+    if (c >= '0' && c <= '9') { *v = (uint8_t)(c - '0'); return true; }
+    if (c >= 'a' && c <= 'f') { *v = (uint8_t)(c - 'a' + 10); return true; }
+    if (c >= 'A' && c <= 'F') { *v = (uint8_t)(c - 'A' + 10); return true; }
+    return false;
+}
+
+// 文本别名 / hex 解析为 type
+static bool sub_debug_lookup_type(const char *s, uint8_t *type) {
+    struct { const char *name; uint8_t type; } map[] = {
+        {"deal", CMD_DEAL_START}, {"stop", CMD_STOP}, {"status", CMD_STATUS_QUERY},
+        {"selftest", CMD_SELF_TEST}, {"reset", CMD_RESET},
+    {"ready", EVT_READY}, {"cardout", EVT_CARD_OUT}, {"cardvalue", EVT_CARD_VALUE},
+    {"dealdone", EVT_DEAL_DONE}, {"jam", EVT_ERROR_CARD_JAM}, {"motorstall", EVT_ERROR_MOTOR_STALL},
+    {"camfail", EVT_ERROR_CAM_FAIL}, {"ack", EVT_ACK},
+    };
+    for (const auto &m : map) {
+        if (strcmp(s, m.name) == 0) { *type = m.type; return true; }
+    }
+    const char *p = s;
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) p += 2;
+    uint8_t hi, lo;
+    if (p[0] && p[1] && sub_debug_hex_val(p[0], &hi) && sub_debug_hex_val(p[1], &lo)) {
+        *type = (uint8_t)((hi << 4) | lo);
+        return true;
+    }
+    return false;
+}
+
+// 空格分隔的 hex 数据 → 字节数组；返回长度，0xFF 表示非法
+static uint8_t sub_debug_parse_hex_data(const char *s, uint8_t *out, uint8_t maxLen) {
+    uint8_t n = 0;
+    while (*s) {
+        while (*s == ' ' || *s == '\t') s++;
+        if (!*s) break;
+        uint8_t hi, lo;
+        if (!sub_debug_hex_val(*s, &hi) || !sub_debug_hex_val(*(s + 1), &lo)) return 0xFF;
+        if (n >= maxLen) return 0xFF;
+        out[n++] = (uint8_t)((hi << 4) | lo);
+        s += 2;
+    }
+    return n;
+}
+
+static void sub_debug_cli_process(const char *line) {
+    if (strcmp(line, "help") == 0) { sub_debug_print_help(); return; }
+
+    if (strcmp(line, "state") == 0) {
+        static const char *names[] = {"IDLE", "SELECTING", "DEALING", "GAME_ACTIVE", "GAME_END"};
+        Serial.printf("[CLI] state = %s (%d)\n", names[state_get_current()], state_get_current());
+        return;
+    }
+
+    // sub <cmd> [hex data...]：底板 → 子板，自动组帧 + CRC
+    if (strncmp(line, "sub ", 4) == 0) {
+        char buf[64];
+        strncpy(buf, line + 4, sizeof(buf) - 1);
+        buf[sizeof(buf) - 1] = '\0';
+        char *type_s = strtok(buf, " \t");
+        char *data_s = strtok(NULL, "");
+        uint8_t type = 0;
+        if (!type_s || !sub_debug_lookup_type(type_s, &type)) {
+            Serial.println("[CLI] sub: 未知命令（type 'help'）");
+            return;
+        }
+        uint8_t data[PROTO_MAX_DATA];
+        uint8_t len = 0;
+        if (data_s) {
+            len = sub_debug_parse_hex_data(data_s, data, PROTO_MAX_DATA);
+            if (len == 0xFF) { Serial.println("[CLI] sub: data 非法 hex"); return; }
+        }
+        if (proto_send(type, data, len)) {
+            Serial.printf("[CLI] -> SUB type=0x%02X len=%u sent\n", type, len);
+        } else {
+            Serial.println("[CLI] sub: 发送队列满/失败");
+        }
+        return;
+    }
+
+    // sim <type> [hex data...]：模拟子板 → 底板，直接喂给协议分发
+    if (strncmp(line, "sim ", 4) == 0) {
+        char buf[64];
+        strncpy(buf, line + 4, sizeof(buf) - 1);
+        buf[sizeof(buf) - 1] = '\0';
+        char *type_s = strtok(buf, " \t");
+        char *data_s = strtok(NULL, "");
+        uint8_t type = 0;
+        if (!type_s || !sub_debug_lookup_type(type_s, &type)) {
+            Serial.println("[CLI] sim: 未知类型（type 'help'）");
+            return;
+        }
+        uint8_t data[PROTO_MAX_DATA];
+        uint8_t len = 0;
+        if (data_s) {
+            len = sub_debug_parse_hex_data(data_s, data, PROTO_MAX_DATA);
+            if (len == 0xFF) { Serial.println("[CLI] sim: data 非法 hex"); return; }
+        }
+        proto_frame_t frame;
+        frame.type = type;
+        frame.len = len;
+        if (len) memcpy(frame.data, data, len);
+        Serial.printf("[CLI] ~ sim EVT 0x%02X len=%u -> proto_on_event\n", type, len);
+        proto_on_event(&frame);
+        return;
+    }
+
+    // 屏幕测试命令
+    if (strcmp(line, "menu") == 0) {
+        display_cmd_t cmd = {};
+        cmd.type = DISPLAY_CMD_MENU;
+        cmd.payload.menu.selectedIndex = display_get_selected();
+        send_display_command(&cmd);
+        Serial.println("[CLI] menu sent");
+        return;
+    }
+    if (strncmp(line, "select ", 7) == 0) {
+        int n = atoi(line + 7);
+        if (n < 1 || n > SCHEME_COUNT) { Serial.printf("[CLI] select: 范围 1~%d\n", SCHEME_COUNT); return; }
+        display_set_selected((uint8_t)(n - 1));
+        display_cmd_t cmd = {};
+        cmd.type = DISPLAY_CMD_SELECT;
+        cmd.payload.menu.selectedIndex = (uint8_t)(n - 1);
+        send_display_command(&cmd);
+        Serial.printf("[CLI] select scheme %d\n", n);
+        return;
+    }
+    if (strncmp(line, "dealing ", 8) == 0) {
+        int pct = atoi(line + 8);
+        display_cmd_t cmd = {};
+        cmd.type = DISPLAY_CMD_DEALING;
+        cmd.payload.dealing.progress = (uint8_t)pct;
+        send_display_command(&cmd);
+        Serial.printf("[CLI] dealing %d%%\n", pct);
+        return;
+    }
+
+    Serial.printf("[CLI] unknown: '%s'\n", line);
+    sub_debug_print_help();
+}
+
 // ================= 子板通信任务 =================
 void vSubboardTask(void *pv) {
     // 中(2) | 固定核心 0 | 队列 + 串口中断/轮询
     proto_frame_t tx;
+    static char s_cli_buf[64];
+    static uint8_t s_cli_len = 0;
+
+    Serial.println("[CLI] type 'help' for subboard command list");
+
     for (;;) {
+        // 0) 调试②：解析底板 USB 串口命令行，转发给子板
+        while (Serial.available() > 0) {
+            char c = (char)Serial.read();
+            if (c == '\n' || c == '\r') {
+                if (s_cli_len > 0) {
+                    s_cli_buf[s_cli_len] = '\0';
+                    sub_debug_cli_process(s_cli_buf);
+                    s_cli_len = 0;
+                }
+            } else if (s_cli_len < sizeof(s_cli_buf) - 1) {
+                s_cli_buf[s_cli_len++] = c;
+            }
+        }
+
         // 1) 下发指令（20ms 超时后继续处理接收，避免收不到上行）
         if (xQueueReceive(xSubboardTxQueue, &tx, pdMS_TO_TICKS(20)) == pdPASS) {
             proto_write_frame(&tx);
@@ -106,10 +277,10 @@ void vDealTask(void *pv) {
                 if (xQueueReceive(xSubboardRxQueue, &evt, pdMS_TO_TICKS(PHOTO_TIMEOUT_MS)) == pdPASS) {
                     if (evt.type == EVT_CARD_OUT) {
                         ok = true;
-                    } else if (evt.type == ERROR_CARD_JAM) {
+                    } else if (evt.type == EVT_ERROR_CARD_JAM) {
                         // TODO: 漏发重试一次，仍失败 → deal_error
                         ok = true;
-                    } else if (evt.type == ERROR_MOTOR_STALL) {
+                    } else if (evt.type == EVT_ERROR_MOTOR_STALL) {
                         goto deal_error;
                     }
                 } else {

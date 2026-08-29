@@ -93,6 +93,20 @@ void proto_rx_byte(uint8_t b) {
 //   所有事件 → xSubboardRxQueue（发牌控制任务消费）
 //   EVT_CARD_VALUE 额外 → xCameraQueue（状态管理/显示）
 void proto_on_event(const proto_frame_t *frame) {
+    // 调试①：子板确认回执（EVT_ACK），回显收到的是哪条指令
+    if (frame->type == EVT_ACK) {
+        if (frame->len >= 1) {
+            Serial.printf("[BOT] SUB-ACK: cmd=0x%02X", frame->data[0]);
+            for (uint8_t i = 1; i < frame->len; i++) {
+                Serial.printf(" %02X", frame->data[i]);
+            }
+            Serial.println();
+        } else {
+            Serial.println("[BOT] SUB-ACK: (empty)");
+        }
+        return;   // ACK 仅用于调试，不进业务队列
+    }
+
     busy_subboard_event(frame->type, frame->data, frame->len);
 
     if (frame->type == EVT_CARD_OUT) {

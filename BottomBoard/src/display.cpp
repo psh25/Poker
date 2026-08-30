@@ -57,42 +57,60 @@ void display_init(void) {
 }
 
 static uint8_t s_drawn = 0;   // 当前屏幕上高亮的行
+// 当前屏幕布局类型：IDLE 屏旋转时需要同步刷新顶部 “Selected: N”
+enum { SCREEN_OTHER = 0, SCREEN_IDLE };
+static uint8_t s_screen = SCREEN_OTHER;
 
 // 画单行方案（选中项蓝底白字，未选中灰底浅字）
 static void draw_row(int i, uint8_t selectedIndex) {
-    uint16_t y = 24 + i * 30;
+    uint16_t y = 20 + i * 26;
     uint16_t bg = (i == selectedIndex) ? TFT_BLUE : TFT_DARKGREY;
     uint16_t fg = (i == selectedIndex) ? TFT_WHITE : TFT_LIGHTGREY;
-    tft.fillRoundRect(10, y, 108, 24, 3, bg);
+    tft.fillRoundRect(10, y, 108, 22, 3, bg);
     tft.setTextColor(fg, bg);
-    tft.setCursor(16, y + 8);
+    tft.setCursor(16, y + 6);
     tft.setTextSize(1);
     tft.print(kSchemeNames[i]);
 }
 
-// 整屏重绘菜单（首次进入 / 状态切换时）
-static void draw_menu(uint8_t selectedIndex) {
-    tft.fillScreen(TFT_BLACK);
-
+// IDLE 屏顶部：Selected: N（旋转时增量刷新，避免整屏闪烁）
+static void draw_idle_header(uint8_t selectedIndex) {
+    tft.fillRect(10, 4, 108, 10, TFT_BLACK);   // 清掉旧数字
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
     tft.setTextSize(1);
     tft.setCursor(10, 4);
-    tft.print("Deal Scheme:");
-    tft.drawFastHLine(10, 16, 108, TFT_WHITE);
+    tft.print("Selected: ");
+    tft.print(selectedIndex + 1);
+}
+
+// IDLE 屏幕：顶部显示已选方案 + 底部确认按钮（短按 → DEALING）
+static void draw_idle(uint8_t selectedIndex) {
+    tft.fillScreen(TFT_BLACK);
+
+    draw_idle_header(selectedIndex);
+    tft.drawFastHLine(10, 15, 108, TFT_WHITE);
 
     for (int i = 0; i < SCHEME_COUNT; i++) {
         draw_row(i, selectedIndex);
     }
 
+    // 确认按钮（绿底黑字）
+    tft.fillRoundRect(10, 126, 108, 22, 4, TFT_GREEN);
+    tft.setTextColor(TFT_BLACK, TFT_GREEN);
+    tft.setCursor(40, 133);
+    tft.print("CONFIRM");
+
     tft.setTextColor(TFT_GREEN, TFT_BLACK);
-    tft.setCursor(10, 150);
-    tft.print("Rotate:sel Press:OK");
+    tft.setCursor(10, 152);
+    tft.print("Press=OK");
     s_drawn = selectedIndex;
+    s_screen = SCREEN_IDLE;
 }
 
 // 增量更新高亮：只重绘旧行和新行，旋转时不再整屏闪烁
 static void draw_select(uint8_t selectedIndex) {
     if (selectedIndex == s_drawn) return;
+    if (s_screen == SCREEN_IDLE) draw_idle_header(selectedIndex);  // 同步刷新顶部方案号
     draw_row(s_drawn, selectedIndex);            // 旧行 → 灰
     draw_row(selectedIndex, selectedIndex);      // 新行 → 蓝
     s_drawn = selectedIndex;
@@ -100,8 +118,8 @@ static void draw_select(uint8_t selectedIndex) {
 
 void display_handle_command(const display_cmd_t *cmd) {
     switch (cmd->type) {
-    case DISPLAY_CMD_MENU:
-        draw_menu(cmd->payload.menu.selectedIndex);
+    case DISPLAY_CMD_IDLE:
+        draw_idle(cmd->payload.menu.selectedIndex);
         break;
     case DISPLAY_CMD_SELECT:
         draw_select(cmd->payload.menu.selectedIndex);

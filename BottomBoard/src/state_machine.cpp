@@ -40,8 +40,7 @@ void state_transition_to(system_state_t next) {
     display_cmd_t cmd = {};
     switch (next) {
     case STATE_IDLE:
-    case STATE_SELECTING:
-        cmd.type = DISPLAY_CMD_MENU;
+        cmd.type = DISPLAY_CMD_IDLE;
         cmd.payload.menu.selectedIndex = display_get_selected();   // 保留当前选中项
         break;
     case STATE_DEALING:   cmd.type = DISPLAY_CMD_DEALING;
@@ -61,21 +60,29 @@ void vStateManagerTask(void *pv) {
     for (;;) {
         EventBits_t bits = xEventGroupWaitBits(
             xStateEventGroup,
-            BIT_USER_INPUT | BIT_CANCEL | BIT_DEAL_COMPLETE | BIT_DEAL_ERROR |
-            BIT_CONFIRM_RECEIVED | BIT_GAME_END | BIT_RESET,
+            BIT_DEAL_COMPLETE | BIT_DEAL_ERROR | BIT_CONFIRM_RECEIVED |
+            BIT_GAME_END | BIT_RESET | BIT_DEAL_CONFIRM |
+            BIT_TEST_IDLE | BIT_TEST_DEALING | BIT_TEST_ACTIVE | BIT_TEST_END,
             pdTRUE,        // 清除位
             pdFALSE,       // 任一满足即可
             portMAX_DELAY);
         (void)bits;
 
+        // CLI 调试：强制切换到指定状态（测试各状态显示/功能）
+        if (bits & BIT_TEST_IDLE)        { state_transition_to(STATE_IDLE);        cur = STATE_IDLE;        continue; }
+        if (bits & BIT_TEST_DEALING)     { state_transition_to(STATE_DEALING);     cur = STATE_DEALING;     continue; }
+        if (bits & BIT_TEST_ACTIVE)      { state_transition_to(STATE_GAME_ACTIVE); cur = STATE_GAME_ACTIVE; continue; }
+        if (bits & BIT_TEST_END)         { state_transition_to(STATE_GAME_END);    cur = STATE_GAME_END;    continue; }
+
         // 转移逻辑对应架构 v2 5.3 转移条件表
         switch (cur) {
         case STATE_IDLE:
-            if (bits & BIT_USER_INPUT) { state_transition_to(STATE_SELECTING); cur = STATE_SELECTING; }
-            break;
-        case STATE_SELECTING:
-            if (bits & BIT_CANCEL)           { state_transition_to(STATE_IDLE); cur = STATE_IDLE; }
-            else if (bits & BIT_USER_INPUT)  { state_transition_to(STATE_DEALING); cur = STATE_DEALING; }
+            if (bits & BIT_DEAL_CONFIRM) {
+                state_transition_to(STATE_DEALING); cur = STATE_DEALING;
+                // 若发牌任务已极快完成/出错，避免丢失完成位
+                if (bits & BIT_DEAL_ERROR)       { state_transition_to(STATE_IDLE); cur = STATE_IDLE; }
+                else if (bits & BIT_DEAL_COMPLETE) { state_transition_to(STATE_GAME_ACTIVE); cur = STATE_GAME_ACTIVE; }
+            }
             break;
         case STATE_DEALING:
             if (bits & BIT_DEAL_ERROR)       { state_transition_to(STATE_IDLE); cur = STATE_IDLE; }

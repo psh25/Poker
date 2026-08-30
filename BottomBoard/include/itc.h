@@ -39,13 +39,18 @@ extern SemaphoreHandle_t xStateMutex;        // 全局状态变量
 // ---- 事件组 ----
 extern EventGroupHandle_t xStateEventGroup;
 
-#define BIT_USER_INPUT         (1 << 0)  // 编码器旋转/按下
-#define BIT_CANCEL             (1 << 1)  // 编码器长按取消选择
-#define BIT_DEAL_COMPLETE      (1 << 2)  // 发牌完成
-#define BIT_DEAL_ERROR         (1 << 3)  // 发牌异常
-#define BIT_CONFIRM_RECEIVED   (1 << 4)  // 小程序确认收到牌堆信息
-#define BIT_GAME_END           (1 << 5)  // 牌局结束
-#define BIT_RESET              (1 << 6)  // 重置
-#define BIT_STATE_CHANGED      (1 << 7)  // 状态已切换（广播）
+#define BIT_DEAL_COMPLETE      (1 << 0)  // 发牌完成
+#define BIT_DEAL_ERROR         (1 << 1)  // 发牌异常
+#define BIT_CONFIRM_RECEIVED   (1 << 2)  // 小程序确认收到牌堆信息
+#define BIT_GAME_END           (1 << 3)  // 牌局结束
+#define BIT_RESET              (1 << 4)  // 重置
+#define BIT_STATE_CHANGED      (1 << 5)  // 状态已切换（广播）
+#define BIT_DEAL_CONFIRM       (1 << 6)  // IDLE 下按下确认 → DEALING
+
+// CLI 调试：强制切换到指定状态（测试各状态显示/功能）
+#define BIT_TEST_IDLE          (1 << 7)
+#define BIT_TEST_DEALING       (1 << 8)
+#define BIT_TEST_ACTIVE        (1 << 9)
+#define BIT_TEST_END           (1 << 10)
 
 void create_itc(void);

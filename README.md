@@ -42,7 +42,7 @@ DealerMachine/
 - **通信原则**：子板 → 底板逐张实时上报（光敏/识别/异常），底板 → 小程序整局统一上传。
 - **板间协议**：`0xA5 | type | len | data | crc8 | 0xAA`，掉线超时保护（详见 [board_protocol.md](docs/board_protocol.md)）。
 - **命令/事件命名**：命令统一 `CMD_*`，事件统一 `EVT_*`（错误事件为 `EVT_ERROR_*`）；CLI 别名 = 枚举名去前缀的小写（`status`、`dealdone`、`motorstall`）。
-- **状态机**：`IDLE → SELECTING → DEALING → GAME_ACTIVE → GAME_END → IDLE`，仅状态管理任务负责切换（单写者）。
+- **状态机**：`IDLE → DEALING → GAME_ACTIVE → GAME_END → IDLE`（选方案/确认并入 IDLE：旋转切换、短按确认发牌），仅状态管理任务负责切换（单写者）。
 - **屏幕显示**：事件驱动（队列触发），非轮询，只展示不决策。
 
 ### 底板任务与优先级

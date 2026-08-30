@@ -68,11 +68,12 @@ void vBluetoothTask(void *pv) {
 static void sub_debug_print_help(void) {
     Serial.println("[CLI] help                         - 本帮助");
     Serial.println("[CLI] state                        - 打印当前状态机状态");
+    Serial.println("[CLI] setstate <idle|dealing|active|end> - 强制切换状态（调试）");
     Serial.println("[CLI] sub <cmd> [hex data...]      - 底板→子板（自动组帧+CRC）");
     Serial.println("[CLI]      cmd: deal|stop|status|selftest|reset 或 hex，如 sub 0x03");
     Serial.println("[CLI] sim <type> [hex data...]     - 模拟子板→底板事件（喂给协议分发）");
     Serial.println("[CLI]      type: ready|cardout|cardvalue|dealdone|jam|motorstall|camfail|ack 或 hex");
-    Serial.println("[CLI] menu | select <n> | dealing <pct> - 底板屏幕测试");
+    Serial.println("[CLI] idle | select <n> | dealing <pct> - 底板屏幕测试");
 }
 
 static bool sub_debug_hex_val(char c, uint8_t *v) {
@@ -123,8 +124,33 @@ static void sub_debug_cli_process(const char *line) {
     if (strcmp(line, "help") == 0) { sub_debug_print_help(); return; }
 
     if (strcmp(line, "state") == 0) {
-        static const char *names[] = {"IDLE", "SELECTING", "DEALING", "GAME_ACTIVE", "GAME_END"};
+        static const char *names[] = {"IDLE", "DEALING", "GAME_ACTIVE", "GAME_END"};
         Serial.printf("[CLI] state = %s (%d)\n", names[state_get_current()], state_get_current());
+        return;
+    }
+
+    // setstate <name|n>：调试用，强制切换状态（通过事件组交给状态管理任务执行）
+    if (strncmp(line, "setstate ", 9) == 0) {
+        struct { const char *name; system_state_t st; } map[] = {
+            {"idle", STATE_IDLE}, {"dealing", STATE_DEALING},
+            {"active", STATE_GAME_ACTIVE},
+            {"end", STATE_GAME_END},
+        };
+        const char *p = line + 9;
+        system_state_t st = (system_state_t)0xFF;
+        for (const auto &m : map) {
+            if (strcmp(p, m.name) == 0) { st = m.st; break; }
+        }
+        if (st == (system_state_t)0xFF) {
+            int n = atoi(p);
+            if (n >= STATE_IDLE && n <= STATE_GAME_END) st = (system_state_t)n;
+        }
+        if (st == (system_state_t)0xFF) {
+            Serial.println("[CLI] setstate: idle|dealing|active|end（或 0~3）");
+            return;
+        }
+        xEventGroupSetBits(xStateEventGroup, BIT_TEST_IDLE << st);  // 测试位连续
+        Serial.printf("[CLI] setstate -> %d\n", (int)st);
         return;
     }
 
@@ -182,12 +208,12 @@ static void sub_debug_cli_process(const char *line) {
     }
 
     // 屏幕测试命令
-    if (strcmp(line, "menu") == 0) {
+    if (strcmp(line, "idle") == 0) {
         display_cmd_t cmd = {};
-        cmd.type = DISPLAY_CMD_MENU;
+        cmd.type = DISPLAY_CMD_IDLE;
         cmd.payload.menu.selectedIndex = display_get_selected();
         send_display_command(&cmd);
-        Serial.println("[CLI] menu sent");
+        Serial.println("[CLI] idle screen sent");
         return;
     }
     if (strncmp(line, "select ", 7) == 0) {
@@ -322,7 +348,7 @@ void vDealTask(void *pv) {
 void vEncoderTask(void *pv) {
     // 中(2) | 任意核心
     // 旋转：1ms 轮询 A/B 相做四态正交解码，累计满一整格（4 次有效跳变）才计一步，抗抖动/噪声
-    // 按键：SW 中断入队；短按确认，长按(>2s)取消返回
+    // 按键：SW 轮询消抖；短按确认（IDLE 直接发牌 / GAME_END 重置），长按无动作
     int8_t selection = 0;
     uint32_t press_start = 0;
     bool press_active = false;
@@ -348,7 +374,7 @@ void vEncoderTask(void *pv) {
             if (sw == 0) {
                 // 按下
                 Serial.println("[ENC] SW press");
-                if (s == STATE_SELECTING || s == STATE_GAME_END) {
+                if (s == STATE_IDLE || s == STATE_GAME_END) {
                     press_start = now_ms;
                     press_active = true;
                 }
@@ -358,24 +384,18 @@ void vEncoderTask(void *pv) {
                 press_active = false;
 
                 uint32_t held = now_ms - press_start;
-                if (held >= ENCODER_LONG_PRESS_MS) {
-                    if (s == STATE_SELECTING) {
-                        Serial.println("[ENC] cancel");
-                        send_display_debug("Cancelled");
-                        xEventGroupSetBits(xStateEventGroup, BIT_CANCEL);
-                    }
-                } else {
-                    if (s == STATE_SELECTING) {
+                // 长按(≥2s) 无动作（原 SELECTING 取消已随状态删除）
+                if (held < ENCODER_LONG_PRESS_MS) {
+                    if (s == STATE_IDLE) {
+                        // IDLE 短按 = 确认发牌（用当前已选方案）
                         Serial.printf("[ENC] confirm scheme %d\n", selection + 1);
                         char msg[32];
-                        snprintf(msg, sizeof(msg), "Selected: %d", selection + 1);
+                        snprintf(msg, sizeof(msg), "Confirm: %d", selection + 1);
                         send_display_debug(msg);
                         xSemaphoreGive(xDealSemaphore);                       // 确认发牌
-                        xEventGroupSetBits(xStateEventGroup, BIT_USER_INPUT); // SELECTING→DEALING
+                        xEventGroupSetBits(xStateEventGroup, BIT_DEAL_CONFIRM); // IDLE→DEALING
                     } else if (s == STATE_GAME_END) {
                         xEventGroupSetBits(xStateEventGroup, BIT_RESET);      // GAME_END→IDLE
-                    } else if (s == STATE_IDLE) {
-                        xEventGroupSetBits(xStateEventGroup, BIT_USER_INPUT); // IDLE→SELECTING
                     }
                 }
             }
@@ -402,9 +422,6 @@ void vEncoderTask(void *pv) {
                     cmd.type = DISPLAY_CMD_SELECT;
                     cmd.payload.menu.selectedIndex = (uint8_t)selection;
                     send_display_command(&cmd);
-                    if (state_get_current() == STATE_IDLE) {
-                        xEventGroupSetBits(xStateEventGroup, BIT_USER_INPUT); // IDLE→SELECTING
-                    }
                 } else if (quad_accum <= -4) {
                     quad_accum = 0;
                     selection = (int8_t)((selection - 1 + SCHEME_COUNT) % SCHEME_COUNT);
@@ -414,9 +431,6 @@ void vEncoderTask(void *pv) {
                     cmd.type = DISPLAY_CMD_SELECT;
                     cmd.payload.menu.selectedIndex = (uint8_t)selection;
                     send_display_command(&cmd);
-                    if (state_get_current() == STATE_IDLE) {
-                        xEventGroupSetBits(xStateEventGroup, BIT_USER_INPUT); // IDLE→SELECTING
-                    }
                 }
             }
             prev_state = st;

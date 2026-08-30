@@ -9,6 +9,40 @@
 #include "protocol.h"
 #include "hardware.h"
 
+// ---- RGB LED debug indicator (common cathode: '-' -> GND) ----
+static uint8_t s_led_r = 0, s_led_g = 0, s_led_b = 0;
+static uint32_t s_led_until = 0;
+
+static void led_set(uint8_t r, uint8_t g, uint8_t b, uint32_t ms) {
+    s_led_r = r; s_led_g = g; s_led_b = b;
+    s_led_until = millis() + ms;
+    sub_led_rgb(r, g, b);
+}
+
+void sub_led_rgb(bool red, bool green, bool blue) {
+    digitalWrite(PIN_LED_R, red   ? HIGH : LOW);
+    digitalWrite(PIN_LED_G, green ? HIGH : LOW);
+    digitalWrite(PIN_LED_B, blue  ? HIGH : LOW);
+}
+
+void sub_led_flash_rx_byte(void) { led_set(1, 0, 0, 150); }   // red 150ms
+void sub_led_flash_frame_ok(void) { led_set(0, 1, 0, 800); }  // green 800ms
+void sub_led_flash_ack_tx(void)   { led_set(0, 0, 1, 300); }  // blue 300ms
+
+void sub_led_tick(void) {
+    if (s_led_until && (int32_t)(millis() - s_led_until) >= 0) {
+        s_led_until = 0;
+        sub_led_rgb(0, 0, 0);
+    }
+}
+
+void sub_led_init(void) {
+    pinMode(PIN_LED_R, OUTPUT);
+    pinMode(PIN_LED_G, OUTPUT);
+    pinMode(PIN_LED_B, OUTPUT);
+    sub_led_rgb(0, 0, 0);
+}
+
 // ---- 串口接收环形缓冲（架构第四章：中断写入，主循环解析）----
 static volatile uint8_t s_rx_ring[UART_RX_RING_SIZE];
 static volatile uint16_t s_rx_head = 0;   // 写入位置
@@ -74,8 +108,7 @@ void sub_hardware_init(void) {
     pinMode(PIN_CAM_RDY, INPUT);
 
     // 指示灯
-    pinMode(PIN_LED, OUTPUT);
-    digitalWrite(PIN_LED, LOW);
+    sub_led_init();   // RGB LED (common cathode: R=15 G=16 B=8)
 
     // 与底板通信串口（2 线 UART）
     Serial1.begin(SUB_UART_BAUD, SERIAL_8N1, SUB_UART_RX_PIN, SUB_UART_TX_PIN);

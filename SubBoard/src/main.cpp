@@ -94,6 +94,7 @@ void loop() {
     while (sub_uart_read_byte(&b)) {
         proto_rx_byte(b);
     }
+    sub_led_tick();  // LED flash timeout
 
     // 2) 调试：电脑串口直接注入命令（模拟底板发来）
     static char s_cli[48];

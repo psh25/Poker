@@ -9,7 +9,7 @@
  */
 
 typedef enum {
-    DISPLAY_CMD_MENU,          // 菜单（方案列表）
+    DISPLAY_CMD_IDLE,          // IDLE: 已选方案 + 确认按钮
     DISPLAY_CMD_SELECT,        // 高亮某个方案
     DISPLAY_CMD_DEALING,       // 发牌中（进度）
     DISPLAY_CMD_GAME_ACTIVE,   // 牌局进行中

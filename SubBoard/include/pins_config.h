@@ -22,7 +22,10 @@
 #define PIN_CAM_RDY          14  // TODO: 拍照完成 / 识别就绪
 
 // ---- 指示灯 ----
-#define PIN_LED              15
+#define PIN_LED_R            15   // RGB LED common-cathode: R channel
+#define PIN_LED_G            16   // RGB LED common-cathode: G channel
+#define PIN_LED_B            8    // RGB LED common-cathode: B channel
+#define PIN_LED              PIN_LED_R   // compat alias: old single LED pin
 
 // ---- 与底板通信：2 线 UART（对端为底板 IO42/IO41）----
 #define PIN_UART_TX          17  // TODO

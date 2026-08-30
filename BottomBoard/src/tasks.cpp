@@ -4,7 +4,7 @@
  *   - 蓝牙：高(3)，队列阻塞，永久等待
  *   - 子板通信：中(2)，固定核心 0，队列 + 串口轮询（20ms 节拍）
  *   - 发牌控制：中高(2)，固定核心 1，信号量触发；光敏 500ms / 摄像头 2s 超时
- *   - 编码器：中(2)，中断 + 队列，5ms 消抖、2s 长按
+ *   - 编码器：中(2)，轮询 + 消抖，旋转切换/取消、短按确认
  *   - 显示：低(1)，队列阻塞（事件驱动）
  *   - 状态管理：低(1)，事件组阻塞（协调器）
  *   - 监控：低(1)，500ms 周期巡检
@@ -212,6 +212,7 @@ static void sub_debug_cli_process(const char *line) {
         display_cmd_t cmd = {};
         cmd.type = DISPLAY_CMD_IDLE;
         cmd.payload.menu.selectedIndex = display_get_selected();
+        cmd.payload.menu.confirmed = display_get_confirmed() ? 1 : 0;
         send_display_command(&cmd);
         Serial.println("[CLI] idle screen sent");
         return;
@@ -220,9 +221,11 @@ static void sub_debug_cli_process(const char *line) {
         int n = atoi(line + 7);
         if (n < 1 || n > SCHEME_COUNT) { Serial.printf("[CLI] select: 范围 1~%d\n", SCHEME_COUNT); return; }
         display_set_selected((uint8_t)(n - 1));
+        display_set_confirmed(false);   // CLI 直接改方案 → 视为未确认
         display_cmd_t cmd = {};
         cmd.type = DISPLAY_CMD_SELECT;
         cmd.payload.menu.selectedIndex = (uint8_t)(n - 1);
+        cmd.payload.menu.confirmed = 0;
         send_display_command(&cmd);
         Serial.printf("[CLI] select scheme %d\n", n);
         return;
@@ -348,9 +351,8 @@ void vDealTask(void *pv) {
 void vEncoderTask(void *pv) {
     // 中(2) | 任意核心
     // 旋转：1ms 轮询 A/B 相做四态正交解码，累计满一整格（4 次有效跳变）才计一步，抗抖动/噪声
-    // 按键：SW 轮询消抖；短按确认（IDLE 直接发牌 / GAME_END 重置），长按无动作
+    // 按键：SW 轮询消抖；短按两段式（确认方案 → CONFIRM 发牌）；GAME_END 短按重置；旋转即取消/改选
     int8_t selection = 0;
-    uint32_t press_start = 0;
     bool press_active = false;
 
     uint8_t prev_state = 0xFF;   // 上次 A/B 组合状态（A<<1|B）
@@ -375,28 +377,34 @@ void vEncoderTask(void *pv) {
                 // 按下
                 Serial.println("[ENC] SW press");
                 if (s == STATE_IDLE || s == STATE_GAME_END) {
-                    press_start = now_ms;
                     press_active = true;
                 }
             } else {
-                // 松开：短按确认 / 长按取消
+                // 松开：短按处理（第一次=确认方案，第二次=CONFIRM 发牌；GAME_END=重置）
                 if (!press_active) continue;
                 press_active = false;
 
-                uint32_t held = now_ms - press_start;
-                // 长按(≥2s) 无动作（原 SELECTING 取消已随状态删除）
-                if (held < ENCODER_LONG_PRESS_MS) {
-                    if (s == STATE_IDLE) {
-                        // IDLE 短按 = 确认发牌（用当前已选方案）
-                        Serial.printf("[ENC] confirm scheme %d\n", selection + 1);
+                if (s == STATE_IDLE) {
+                    if (!display_get_confirmed()) {
+                        // 第一次按下：确认当前高亮方案（顶部显示，不进入发牌）
+                        Serial.printf("[ENC] scheme %d selected\n", selection + 1);
+                        display_set_confirmed(true);
+                        display_cmd_t cmd = {};
+                        cmd.type = DISPLAY_CMD_SELECT;
+                        cmd.payload.menu.selectedIndex = (uint8_t)selection;
+                        cmd.payload.menu.confirmed = 1;
+                        send_display_command(&cmd);
+                    } else {
+                        // 第二次按下（CONFIRM 最终确认）：进入 DEALING
+                        Serial.printf("[ENC] confirm deal scheme %d\n", selection + 1);
                         char msg[32];
                         snprintf(msg, sizeof(msg), "Confirm: %d", selection + 1);
                         send_display_debug(msg);
                         xSemaphoreGive(xDealSemaphore);                       // 确认发牌
                         xEventGroupSetBits(xStateEventGroup, BIT_DEAL_CONFIRM); // IDLE→DEALING
-                    } else if (s == STATE_GAME_END) {
-                        xEventGroupSetBits(xStateEventGroup, BIT_RESET);      // GAME_END→IDLE
                     }
+                } else if (s == STATE_GAME_END) {
+                    xEventGroupSetBits(xStateEventGroup, BIT_RESET);           // GAME_END→IDLE
                 }
             }
         }
@@ -418,18 +426,22 @@ void vEncoderTask(void *pv) {
                     selection = (int8_t)((selection + 1 + SCHEME_COUNT) % SCHEME_COUNT);
                     Serial.printf("[ENC] rot +1 sel=%d\n", selection + 1);
                     display_set_selected((uint8_t)selection);
+                    display_set_confirmed(false);   // 旋转改变选择 → 回到未确认
                     display_cmd_t cmd = {};
                     cmd.type = DISPLAY_CMD_SELECT;
                     cmd.payload.menu.selectedIndex = (uint8_t)selection;
+                    cmd.payload.menu.confirmed = 0;
                     send_display_command(&cmd);
                 } else if (quad_accum <= -4) {
                     quad_accum = 0;
                     selection = (int8_t)((selection - 1 + SCHEME_COUNT) % SCHEME_COUNT);
                     Serial.printf("[ENC] rot -1 sel=%d\n", selection + 1);
                     display_set_selected((uint8_t)selection);
+                    display_set_confirmed(false);   // 旋转改变选择 → 回到未确认
                     display_cmd_t cmd = {};
                     cmd.type = DISPLAY_CMD_SELECT;
                     cmd.payload.menu.selectedIndex = (uint8_t)selection;
+                    cmd.payload.menu.confirmed = 0;
                     send_display_command(&cmd);
                 }
             }

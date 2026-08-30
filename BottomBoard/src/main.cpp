@@ -35,7 +35,7 @@ void setup() {
     create_all_tasks();                // 6
 
     display_cmd_t cmd = {};
-    cmd.type = DISPLAY_CMD_IDLE;       // 7：初始 IDLE 屏（已选方案 + 确认按钮）
+    cmd.type = DISPLAY_CMD_IDLE;       // 7：初始 IDLE 屏（未选择 + CONFIRM 按钮）
     cmd.payload.menu.selectedIndex = 0;
     send_display_command(&cmd);
 

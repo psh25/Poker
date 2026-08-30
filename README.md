@@ -21,14 +21,14 @@ DealerMachine/
 | 部件 | 所属板 | 说明 |
 |------|--------|------|
 | 底座转盘步进电机 | 底板 | TMC2209 驱动（STEP/DIR/ENN + 单线 UART），StallGuard 堵转检测 |
-| 屏幕 + SD 卡 | 底板 | ILI9341 320×240，与 SD 共用 SPI 总线（独立片选） |
-| 旋转编码器 | 底板 | EC11，A/B 相 + 按键，选择/确认/重置 |
+| 屏幕 + SD 卡 | 底板 | ST7735 128×160（1.8"，当前测试板），与 SD 共用 SPI 总线（独立片选） |
+| 旋转编码器 | 底板 | EC11，A/B 相 + 按键，选择方案 / 确认方案 / CONFIRM 发牌 / 重置 |
 | 霍尔零点传感器 | 底板 | A3144，两段式上电归零、运行中失步校准 |
 | 蓝牙 | 底板 | ESP32-S3 内置 BLE，与小程序通信 |
 | 发牌电机 | 子板 | 6V 直流电机，由子板控制 |
 | 光敏传感器 | 子板 | 检测牌是否发出、计数 |
 | 摄像头 | 子板 | 识别牌面（花色、点数） |
-| 板间通信 | 滑环 | **2 线 UART**（IO42 TX / IO41 RX），CRC 校验 |
+| 板间通信 | 滑环 | **2 线 UART**（底板 IO42 TX / IO41 RX；子板测试占位 IO17/IO18），CRC 校验 |
 
 > ⚠️ 底板 IO 映射转写自《底板软件开发交接指南》，**开发前必须与原理图逐项核对**（源文档自述可能有误）。
 
@@ -42,7 +42,7 @@ DealerMachine/
 - **通信原则**：子板 → 底板逐张实时上报（光敏/识别/异常），底板 → 小程序整局统一上传。
 - **板间协议**：`0xA5 | type | len | data | crc8 | 0xAA`，掉线超时保护（详见 [board_protocol.md](docs/board_protocol.md)）。
 - **命令/事件命名**：命令统一 `CMD_*`，事件统一 `EVT_*`（错误事件为 `EVT_ERROR_*`）；CLI 别名 = 枚举名去前缀的小写（`status`、`dealdone`、`motorstall`）。
-- **状态机**：`IDLE → DEALING → GAME_ACTIVE → GAME_END → IDLE`（选方案/确认并入 IDLE：旋转切换、短按确认发牌），仅状态管理任务负责切换（单写者）。
+- **状态机**：`IDLE → DEALING → GAME_ACTIVE → GAME_END → IDLE`（选方案并入 IDLE：旋转切换/取消、短按确认方案、再按 CONFIRM 发牌），仅状态管理任务负责切换（单写者）。
 - **屏幕显示**：事件驱动（队列触发），非轮询，只展示不决策。
 
 ### 底板任务与优先级
@@ -52,14 +52,14 @@ DealerMachine/
 | 蓝牙通信 | 高 (3) | 任意 | 队列阻塞 | 与小程序协议待定 |
 | 子板通信 | 中 (2) | 固定核心 0 | 队列 + 串口 | 20ms 轮询，掉线阈值 3s |
 | 发牌控制 | 中高 (2) | 固定核心 1 | 信号量触发 | 光敏 500ms、摄像头 2s 超时 |
-| 编码器处理 | 中 (2) | 任意 | 中断 + 队列 | 5ms 消抖、2s 长按 |
+| 编码器处理 | 中 (2) | 任意 | 1ms 轮询 A/B + SW | 10ms 消抖、4 步/格 |
 | 屏幕显示 | 低 (1) | 任意 | 队列触发 | 事件驱动，队列容量 5 |
 | 状态管理 | 低 (1) | 任意 | 事件组阻塞 | 永久等待（协调器） |
 | 系统监控 | 低 (1) | 任意 | 定时器 | 500ms 巡检温度/SG/心跳 |
 
 ## 底板代码框架说明
 
-`BottomBoard/` 目前只是**大致框架**：任务、ITC、状态机、通信协议已搭好，各功能的具体实现以空函数（`busy_*`）占位，并在代码注释中标注了对应的架构章节与时序。
+`BottomBoard/` 已具备可用的**基础交互**：屏幕方案选择（两段式确认）、编码器旋转/按键、串口 CLI 调试（`sub` / `sim` / `setstate` 等）均已实现；电机、霍尔、SD、蓝牙等硬件功能仍以空函数（`busy_*`）占位，并在代码注释中标注了对应的架构章节与时序。
 
 | 文件 | 内容 |
 |------|------|
@@ -67,6 +67,7 @@ DealerMachine/
 | `include/app_config.h` | 优先级、栈大小、队列容量、时序常量 |
 | `include/itc.h` / `src/itc.cpp` | 队列、信号量、互斥量、事件组创建 |
 | `src/tasks.cpp` | 7 个任务骨架 |
+| `src/display.cpp` / `include/display.h` | 屏幕显示（IDLE 屏：未选择/已选方案 + CONFIRM 按钮） |
 | `src/state_machine.cpp` | 状态机与转移逻辑 |
 | `src/protocol.cpp` | 子板 UART 协议（帧解析/发送/事件分发） |
 | `src/hardware.cpp` | 硬件初始化、中断、TMC/归零/自检占位 |
@@ -77,7 +78,7 @@ DealerMachine/
 ## 开发环境
 
 - VSCode + PlatformIO 插件
-- 打开 `BottomBoard/` 目录即可构建上传；板卡与烧录参数统一在 `platformio.ini` 中（当前为 `esp32-s3-devkitc-1`，16MB Flash / PSRAM 编译参数）
+- 打开 `BottomBoard/` 或 `SubBoard/` 目录即可构建上传；板卡与烧录参数统一在各自 `platformio.ini` 中（当前均为 `esp32-s3-devkitc-1`；底板默认 8MB Flash、无 PSRAM，16MB/PSRAM 配置已注释，待按模组型号恢复）
 - 调试串口（CH340 / UART0）115200 波特率，日志从 `Serial` 输出
 - 屏幕 / SD 驱动后续通过 `lib_deps` 声明（如 TFT_eSPI、SdFat），无需依赖本机 Arduino 库目录
 
@@ -88,12 +89,17 @@ DealerMachine/
 - [ ] 底板 IO 映射与原理图核对
 - [ ] TMC2209 单线 UART 驱动（`I_scale_analog=0`、StallGuard、电流 ≤1.4A RMS）
 - [ ] 霍尔两段式归零与失步校准
-- [ ] 屏幕 / SD 驱动（TFT_eSPI + SdFat）
+- [x] 屏幕显示（ST7735 128×160：方案列表 + 两段式确认）
+- [ ] SD 卡驱动（SdFat，与屏幕共用 SPI 的片选互斥）
+- [x] 底板 CLI 调试（sub / sim / setstate / 屏幕测试）
 - [ ] 蓝牙（BLE）与小程序协议
-- [x] 子板 `SubBoard/` PlatformIO 项目框架（按 `docs/subboard_architecture.md`）
-- [ ] 板间协议帧定稿与联调
+- [x] 子板 `SubBoard/` PlatformIO 项目（裸机状态机 + 串口协议）
+- [x] 子板 RGB LED 串口调试指示（红=收到字节 / 绿=完整帧 / 蓝=ACK）
+- [x] 板间协议基础联调（ACK 回传、CLI 注入）
+- [ ] 板间全流程联调（待子板硬件定型）
 
 ## 注意事项
 
 - Micro USB 调试口仅 4.6~4.7V，**禁止**给视觉模组和满载电机供电。
 - 电机启停会产生强电磁干扰：传感器采样需消抖/多次采样，串口必须带校验。
+- 串口接线：两板间 RX/TX 交叉连接且**必须共地**；板间 UART 用专用引脚（底板 IO42/41、子板 IO17/18），不要占用 UART0（GPIO43/44，CH340 调试口）；给某块板烧录前先断开两板间的 RX/TX 线。

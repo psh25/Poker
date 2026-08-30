@@ -44,7 +44,6 @@
 
 // ================= 时序 / 超时（ms）=================
 #define ENCODER_DEBOUNCE_MS    5     // 编码器消抖（架构 v2 异常处理 8.1）
-#define ENCODER_LONG_PRESS_MS  2000  // 编码器长按取消（>2s）
 #define PHOTO_TIMEOUT_MS       500   // 光敏超时（与子板协议一致）
 #define CAMERA_TIMEOUT_MS      2000  // 摄像头识别超时（与子板协议一致）
 #define SUB_RESP_TIMEOUT_MS    1000  // 等待子板响应超时

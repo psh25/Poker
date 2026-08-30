@@ -1,6 +1,6 @@
 /**
  * 屏幕显示（架构 v2 附录 A）：事件驱动、非阻塞发送、只展示不决策。
- * 初步实现：方案选择菜单（旋转高亮、按下确认、长按返回）。
+ * 初步实现：方案选择菜单（旋转切换/取消、短按确认、再按 CONFIRM 发牌）。
  * 屏幕：1.8" ST7735 128x160，SPI（引脚编译参数见 platformio.ini）。
  * 注：当前用 ASCII 文本（TFT_eSPI 默认字体不含中文），中文显示后续可加字体。
  */
@@ -38,6 +38,16 @@ uint8_t display_get_selected(void) {
     return g_selected;
 }
 
+static uint8_t g_confirmed = 0;  // 是否已通过按下确认方案（0=未选择，顶部显示 -）
+
+void display_set_confirmed(bool on) {
+    g_confirmed = on ? 1 : 0;
+}
+
+bool display_get_confirmed(void) {
+    return g_confirmed != 0;
+}
+
 void display_init(void) {
     tft.init();
     tft.setRotation(2);            // 128x160 竖屏（若方向不对改为 0）
@@ -73,56 +83,69 @@ static void draw_row(int i, uint8_t selectedIndex) {
     tft.print(kSchemeNames[i]);
 }
 
-// IDLE 屏顶部：Selected: N（旋转时增量刷新，避免整屏闪烁）
-static void draw_idle_header(uint8_t selectedIndex) {
+// IDLE 屏顶部：已确认显示 “Selected: N”，未确认显示 “Selected: -”
+static void draw_idle_header(uint8_t selectedIndex, uint8_t confirmed) {
     tft.fillRect(10, 4, 108, 10, TFT_BLACK);   // 清掉旧数字
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
     tft.setTextSize(1);
     tft.setCursor(10, 4);
-    tft.print("Selected: ");
-    tft.print(selectedIndex + 1);
+    if (confirmed) {
+        tft.print("Selected: ");
+        tft.print(selectedIndex + 1);
+    } else {
+        tft.print("Selected: -");
+    }
 }
 
-// IDLE 屏幕：顶部显示已选方案 + 底部确认按钮（短按 → DEALING）
-static void draw_idle(uint8_t selectedIndex) {
+// 底部 CONFIRM 按钮：已确认方案 = 绿色可用（再按进入发牌）；未确认 = 置灰
+static void draw_confirm_button(uint8_t confirmed) {
+    uint16_t bg = confirmed ? TFT_GREEN : TFT_DARKGREY;
+    tft.fillRoundRect(10, 126, 108, 22, 4, bg);
+    tft.setTextColor(TFT_BLACK, bg);
+    tft.setCursor(40, 133);
+    tft.print("CONFIRM");
+
+    tft.setTextColor(bg, TFT_BLACK);
+    tft.setCursor(10, 152);
+    tft.print(confirmed ? "Press=OK" : "Press=Sel");
+}
+
+// IDLE 屏幕：顶部（未选择/已选方案）+ 方案列表 + 底部确认按钮
+static void draw_idle(uint8_t selectedIndex, uint8_t confirmed) {
     tft.fillScreen(TFT_BLACK);
 
-    draw_idle_header(selectedIndex);
+    draw_idle_header(selectedIndex, confirmed);
     tft.drawFastHLine(10, 15, 108, TFT_WHITE);
 
     for (int i = 0; i < SCHEME_COUNT; i++) {
         draw_row(i, selectedIndex);
     }
 
-    // 确认按钮（绿底黑字）
-    tft.fillRoundRect(10, 126, 108, 22, 4, TFT_GREEN);
-    tft.setTextColor(TFT_BLACK, TFT_GREEN);
-    tft.setCursor(40, 133);
-    tft.print("CONFIRM");
-
-    tft.setTextColor(TFT_GREEN, TFT_BLACK);
-    tft.setCursor(10, 152);
-    tft.print("Press=OK");
+    draw_confirm_button(confirmed);
     s_drawn = selectedIndex;
     s_screen = SCREEN_IDLE;
 }
 
-// 增量更新高亮：只重绘旧行和新行，旋转时不再整屏闪烁
-static void draw_select(uint8_t selectedIndex) {
-    if (selectedIndex == s_drawn) return;
-    if (s_screen == SCREEN_IDLE) draw_idle_header(selectedIndex);  // 同步刷新顶部方案号
-    draw_row(s_drawn, selectedIndex);            // 旧行 → 灰
-    draw_row(selectedIndex, selectedIndex);      // 新行 → 蓝
-    s_drawn = selectedIndex;
+// 增量更新：顶部 + 确认按钮 + 高亮行（旋转 / 确认 / 取消时调用）
+static void draw_select(uint8_t selectedIndex, uint8_t confirmed) {
+    if (s_screen == SCREEN_IDLE) {
+        draw_idle_header(selectedIndex, confirmed);
+        draw_confirm_button(confirmed);
+    }
+    if (selectedIndex != s_drawn) {
+        draw_row(s_drawn, selectedIndex);            // 旧行 → 灰
+        draw_row(selectedIndex, selectedIndex);      // 新行 → 蓝
+        s_drawn = selectedIndex;
+    }
 }
 
 void display_handle_command(const display_cmd_t *cmd) {
     switch (cmd->type) {
     case DISPLAY_CMD_IDLE:
-        draw_idle(cmd->payload.menu.selectedIndex);
+        draw_idle(cmd->payload.menu.selectedIndex, cmd->payload.menu.confirmed);
         break;
     case DISPLAY_CMD_SELECT:
-        draw_select(cmd->payload.menu.selectedIndex);
+        draw_select(cmd->payload.menu.selectedIndex, cmd->payload.menu.confirmed);
         break;
 
     case DISPLAY_CMD_DEALING:

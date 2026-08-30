@@ -111,7 +111,7 @@ void busy_deal_step(const char *step) {
 }
 
 void busy_encoder(uint8_t kind) {
-    // TODO: 方案索引切换、确认、重置、长按取消
+    // TODO: 方案索引切换、确认、重置
     (void)kind;
 }
 

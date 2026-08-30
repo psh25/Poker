@@ -67,6 +67,7 @@ for b in [type, len] + data:
 
 - 子板每收到一帧**校验通过**的命令：串口打印 `[SUB] RX: cmd=0x.. len=.. data:..`，回发 `EVT_ACK`（数据 = 原 type + 原 data），再打印 `[SUB] TX: ACK cmd=0x..`。
 - 底板收到 `EVT_ACK`：串口打印 `[BOT] SUB-ACK: cmd=0x..`，**仅调试，不进业务队列**。
+- 子板侧可用板载 RGB LED 直观观察链路（红=收到字节 / 绿=完整帧 / 蓝=ACK 已发），详见 [subboard_architecture.md](subboard_architecture.md) 5.6。
 - 示例：底板发 `A5 03 00 3F AA`（查询状态）→ 子板回 `A5 88 01 03 .. AA`（ACK，数据 0x03 表示“确认的是 0x03 命令”）。回显 deal 命令的 ACK 帧为 `A5 88 01 01 48 AA`。
 
 ## 6. 调试 CLI（电脑串口 115200）
@@ -78,7 +79,8 @@ help                                # 帮助
 state                               # 打印底板当前状态机状态
 sub <cmd> [hex data...]             # 底板 → 子板（自动组帧 + 自动算 CRC）
 sim <type> [hex data...]            # 模拟子板 → 底板事件（本地喂给协议分发）
-menu | select <n> | dealing <pct>   # 底板屏幕测试
+idle | select <n> | dealing <pct>   # 底板屏幕测试
+setstate <idle|dealing|active|end>  # 强制切换底板状态机（调试）
 ```
 
 - `cmd` / `type` 支持文本别名或 hex：
@@ -122,7 +124,7 @@ help | deal | stop | status | selftest | reset | <hex type> [hex data...]
 
 > 载荷超过 32 字节时：两端同步增大 `PROTO_MAX_DATA`（`protocol.h`），或拆成多帧由业务层组合。
 
-## 9. 命名约定与缩写
+## 8. 命名约定与缩写
 
 - **CMD** = Command（命令）：底板 → 子板，枚举 `CMD_*`，取值 0x01~0x0F。
 - **EVT** = Event（事件）：子板 → 底板，枚举统一 `EVT_*`（错误事件为 `EVT_ERROR_*`），取值 0x81~0x8F。
@@ -130,7 +132,9 @@ help | deal | stop | status | selftest | reset | <hex type> [hex data...]
 - **CLI 别名** = 枚举名去掉前缀后的小写（如 `CMD_STATUS_QUERY` → `status`，`EVT_ERROR_MOTOR_STALL` → `motorstall`）。
 - 串口打印前缀统一：底板 `[BOT]`，子板 `[SUB]`，调试命令行 `[CLI]`。
 
-## 8. 常见问题
+## 9. 常见问题
 
 - **收不到 ACK**：检查波特率（115200）、接线（TX↔RX 交叉、共地）、两端 CRC 是否一致。
 - **乱码 / 丢帧**：杜邦线尽量短、远离电机线；确认无干扰源后仍乱码可降低波特率。
+- **两板串口必须共地**：RX/TX 交叉连接外还要连 GND，否则接收端会把噪声当数据（表现为持续乱码/子板红灯常亮）。
+- **不要占用 UART0**：板间通信用专用引脚（底板 IO42/41、子板 IO17/18），GPIO43/44 是 CH340 调试口；烧录前先断开两板间的 RX/TX 线。

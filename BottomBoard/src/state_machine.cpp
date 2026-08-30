@@ -40,8 +40,10 @@ void state_transition_to(system_state_t next) {
     display_cmd_t cmd = {};
     switch (next) {
     case STATE_IDLE:
+        display_set_confirmed(false);   // 进入 IDLE 一律视为“未选择”
         cmd.type = DISPLAY_CMD_IDLE;
         cmd.payload.menu.selectedIndex = display_get_selected();   // 保留当前选中项
+        cmd.payload.menu.confirmed = 0;
         break;
     case STATE_DEALING:   cmd.type = DISPLAY_CMD_DEALING;
                           cmd.payload.dealing.progress = 0;

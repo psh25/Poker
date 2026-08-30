@@ -10,7 +10,7 @@
 
 typedef enum {
     DISPLAY_CMD_IDLE,          // IDLE: 已选方案 + 确认按钮
-    DISPLAY_CMD_SELECT,        // 高亮某个方案
+    DISPLAY_CMD_SELECT,        // 高亮某个方案（含是否已确认）
     DISPLAY_CMD_DEALING,       // 发牌中（进度）
     DISPLAY_CMD_GAME_ACTIVE,   // 牌局进行中
     DISPLAY_CMD_GAME_END,      // 牌局结束
@@ -22,7 +22,7 @@ typedef enum {
 typedef struct {
     display_cmd_type_t type;
     union {
-        struct { uint8_t selectedIndex; char menuList[4][16]; } menu;
+        struct { uint8_t selectedIndex; uint8_t confirmed; char menuList[4][16]; } menu;
         struct { uint8_t progress; char status[20]; } dealing;
         struct { char cardInfo[32]; uint8_t remaining; } game;
         struct { char result[32]; uint32_t totalCards; } gameEnd;
@@ -43,6 +43,10 @@ void display_handle_command(const display_cmd_t *cmd);
 // 当前选中的方案索引（编码器任务更新，状态机发送菜单时使用）
 void display_set_selected(uint8_t index);
 uint8_t display_get_selected(void);
+
+// 是否已通过按下确认方案（两段式：先确认方案，再按 CONFIRM 发牌）
+void display_set_confirmed(bool on);
+bool display_get_confirmed(void);
 
 // 发送一条调试提示（显示任务会停留约 0.7s 再继续）
 void send_display_debug(const char *msg);

@@ -6,7 +6,7 @@
 typedef struct {
     int direction;       // +1 顺时针, -1 逆时针
     bool pressed;        // 是否按下
-    uint32_t timestamp;  // ms 时间戳（用于长按/消抖）
+    uint32_t timestamp;  // ms 时间戳（用于消抖）
 } encoder_event_t;
 
 void init_hardware(void);   // GPIO / UART / SPI 初始化

@@ -1,6 +1,6 @@
 /**
- * 子板硬件层：初始化、中断、串口环形缓冲、占位函数。
- * 具体驱动（电机 / 光敏 / 摄像头）按 docs/subboard_architecture.md 后续实现。
+ * 子板硬件层：初始化、中断、串口环形缓冲、TB6612 发牌电机驱动。
+ * 摄像头 / 光敏按 docs/subboard_architecture.md 后续实现。
  */
 #include <Arduino.h>
 
@@ -8,6 +8,12 @@
 #include "app_config.h"
 #include "protocol.h"
 #include "hardware.h"
+#include "debug.h"
+
+// ---- TB6612 发牌电机 PWM（20kHz，8bit，与 test1 调试台一致）----
+#define MOTOR_PWM_CH      0
+#define MOTOR_PWM_FREQ    20000
+#define MOTOR_PWM_BITS    8
 
 // ---- RGB LED debug indicator (common cathode: '-' -> GND) ----
 static uint8_t s_led_r = 0, s_led_g = 0, s_led_b = 0;
@@ -89,12 +95,18 @@ bool sub_photo_take(void) {
 void sub_hardware_init(void) {
     Serial.begin(115200);                 // 调试串口
 
-    // 电机（占位）
+    // 发牌电机（TB6612FNG：PWM + AIN1/AIN2 + STBY）
     pinMode(PIN_MOTOR_PWM, OUTPUT);
-    digitalWrite(PIN_MOTOR_PWM, LOW);
-    pinMode(PIN_MOTOR_DIR, OUTPUT);
-    digitalWrite(PIN_MOTOR_DIR, LOW);
-    pinMode(PIN_MOTOR_CURRENT, INPUT);    // TODO: 电流检测 ADC
+    pinMode(PIN_MOTOR_AIN1, OUTPUT);
+    pinMode(PIN_MOTOR_AIN2, OUTPUT);
+    pinMode(PIN_MOTOR_STBY, OUTPUT);
+    digitalWrite(PIN_MOTOR_STBY, HIGH);   // 使能（保持高，便于随时启动）
+    digitalWrite(PIN_MOTOR_AIN1, LOW);
+    digitalWrite(PIN_MOTOR_AIN2, LOW);
+    ledcSetup(MOTOR_PWM_CH, MOTOR_PWM_FREQ, MOTOR_PWM_BITS);
+    ledcAttachPin(PIN_MOTOR_PWM, MOTOR_PWM_CH);
+    ledcWrite(MOTOR_PWM_CH, 0);
+    pinMode(PIN_MOTOR_CURRENT, INPUT);    // TODO: 电流检测 ADC（堵转检测）
 
     // 光敏
     pinMode(PIN_PHOTO, INPUT_PULLUP);     // TODO: 按传感器电平配置
@@ -115,6 +127,14 @@ void sub_hardware_init(void) {
     Serial1.onReceive(sub_uart_rx_isr);   // 中断接收 → 环形缓冲
 
     attachInterrupt(digitalPinToInterrupt(PIN_PHOTO), photo_isr, CHANGE); // TODO: 按实际沿配置
+
+    // 打印当前固件使用的引脚（核对实际接线用）
+    dbg_println("[SUB] ---- pin config ----");
+    dbg_printf("[SUB] motor: PWMA=%d AIN1=%d AIN2=%d STBY=%d\n",
+                  PIN_MOTOR_PWM, PIN_MOTOR_AIN1, PIN_MOTOR_AIN2, PIN_MOTOR_STBY);
+    dbg_printf("[SUB] uart : RX=%d TX=%d\n", PIN_UART_RX, PIN_UART_TX);
+    dbg_printf("[SUB] photo: %d | LED: R=%d G=%d B=%d\n",
+                  PIN_PHOTO, PIN_LED_R, PIN_LED_G, PIN_LED_B);
 }
 
 void sub_self_test(void) {
@@ -123,15 +143,46 @@ void sub_self_test(void) {
     proto_send(EVT_READY, NULL, 0);
 }
 
-// ================= 占位函数（TODO：按架构实现具体逻辑）=================
+// ================= 发牌电机驱动（TB6612）=================
 void busy_motor_start(void) {
-    // TODO: 启动发牌电机（PWM 输出，必要时方向/软启动）
+    // 正转出牌：AIN1=0, AIN2=1（实测转向相反，已对调）
+    digitalWrite(PIN_MOTOR_STBY, HIGH);
+    digitalWrite(PIN_MOTOR_AIN1, LOW);
+    digitalWrite(PIN_MOTOR_AIN2, HIGH);
+    ledcWrite(MOTOR_PWM_CH, MOTOR_DUTY);
+}
+
+void busy_motor_start_reverse(void) {
+    // 反转回退：AIN1=1, AIN2=0（出牌后把下一张退到摄像头可拍位置）
+    digitalWrite(PIN_MOTOR_STBY, HIGH);
+    digitalWrite(PIN_MOTOR_AIN1, HIGH);
+    digitalWrite(PIN_MOTOR_AIN2, LOW);
+    ledcWrite(MOTOR_PWM_CH, MOTOR_REV_DUTY);
 }
 
 void busy_motor_stop(void) {
-    // TODO: 停止发牌电机（PWM=0）
+    // 停止：AIN1/2 全低 = 滑行（自然停）；如需立即停可改 AIN1/2 全高 = 短刹车
+    digitalWrite(PIN_MOTOR_AIN1, LOW);
+    digitalWrite(PIN_MOTOR_AIN2, LOW);
+    ledcWrite(MOTOR_PWM_CH, 0);
 }
 
+// 电机自检：正转 300ms → 停 → 反转 300ms → 停（开机与 mtest 命令用）
+// 如果电机完全不转，说明引脚 / 驱动供电 / 接线有问题
+void motor_self_test(void) {
+    dbg_println("[MOT] self-test: forward 300ms...");
+    busy_motor_start();
+    delay(300);
+    busy_motor_stop();
+    delay(100);
+    dbg_println("[MOT] self-test: reverse 300ms...");
+    busy_motor_start_reverse();
+    delay(300);
+    busy_motor_stop();
+    dbg_println("[MOT] self-test done (motor should have twitched twice)");
+}
+
+// ================= 占位函数（TODO：按架构实现具体逻辑）=================
 void busy_camera_capture(uint8_t *cardData, uint8_t *cardLen) {
     // TODO: 触发摄像头拍照并识别牌面（花色、点数）
     // 成功：填充 cardData 并设置 *cardLen > 0
@@ -140,7 +191,8 @@ void busy_camera_capture(uint8_t *cardData, uint8_t *cardLen) {
 }
 
 void busy_self_test(void) {
-    // TODO: 光敏 / 电机驱动 / 摄像头初始化自检
+    // 上电自检：先让电机正/反转各抖一下，肉眼确认驱动链路正常
+    motor_self_test();
 }
 
 void busy_status_query(void) {
@@ -151,3 +203,7 @@ void busy_error_handle(uint8_t errorType) {
     // TODO: 本地错误处理（如 LED 快闪）
     (void)errorType;
 }
+
+
+
+

@@ -25,7 +25,7 @@ static const char *kSchemeNames[SCHEME_COUNT] = {
     "Deal Scheme 1",
     "Deal Scheme 2",
     "Deal Scheme 3",
-    "Deal Scheme 4",
+    "Deal Test",
 };
 
 static uint8_t g_selected = 0;   // 当前选中的方案索引
@@ -139,6 +139,40 @@ static void draw_select(uint8_t selectedIndex, uint8_t confirmed) {
     }
 }
 
+// 发牌界面：方案名 + 当前牌堆 + 进度 + 阶段状态 + 错误（最多 DEAL_ERROR_MAX 条）
+static void draw_dealing(const display_cmd_t *cmd) {
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setTextSize(1);
+
+    tft.setCursor(10, 4);
+    tft.print(kSchemeNames[cmd->payload.dealing.scheme % SCHEME_COUNT]);
+
+    tft.setCursor(10, 16);
+    tft.print("Deck: ");
+    tft.print(cmd->payload.dealing.deck);
+    tft.print("  ");
+    tft.print(cmd->payload.dealing.progress);
+    tft.print("%");
+
+    tft.setCursor(10, 30);
+    tft.setTextColor(TFT_GREEN, TFT_BLACK);
+    tft.print(cmd->payload.dealing.status);
+
+    for (uint8_t i = 0; i < cmd->payload.dealing.errorCount && i < DEAL_ERROR_MAX; i++) {
+        tft.setCursor(10, 44 + i * 12);
+        tft.setTextColor(TFT_RED, TFT_BLACK);
+        tft.print(cmd->payload.dealing.errors[i]);
+    }
+
+    // 出错时提示：按下编码器重置回 IDLE
+    if (cmd->payload.dealing.errorCount > 0) {
+        tft.setCursor(10, 150);
+        tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+        tft.print("Press=Reset");
+    }
+}
+
 void display_handle_command(const display_cmd_t *cmd) {
     switch (cmd->type) {
     case DISPLAY_CMD_IDLE:
@@ -149,13 +183,7 @@ void display_handle_command(const display_cmd_t *cmd) {
         break;
 
     case DISPLAY_CMD_DEALING:
-        tft.fillScreen(TFT_BLACK);
-        tft.setTextColor(TFT_WHITE, TFT_BLACK);
-        tft.setTextSize(1);
-        tft.setCursor(10, 70);
-        tft.print("Dealing... ");
-        tft.print(cmd->payload.dealing.progress);
-        tft.print("%");
+        draw_dealing(cmd);
         break;
 
     case DISPLAY_CMD_GAME_ACTIVE:

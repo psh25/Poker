@@ -38,6 +38,7 @@ void state_transition_to(system_state_t next) {
 
     // 状态变化 → 屏幕（架构 v2 附录 A 生产者映射）
     display_cmd_t cmd = {};
+    cmd.type = (display_cmd_type_t)0xFF;   // 默认不发送
     switch (next) {
     case STATE_IDLE:
         display_set_confirmed(false);   // 进入 IDLE 一律视为“未选择”
@@ -45,15 +46,14 @@ void state_transition_to(system_state_t next) {
         cmd.payload.menu.selectedIndex = display_get_selected();   // 保留当前选中项
         cmd.payload.menu.confirmed = 0;
         break;
-    case STATE_DEALING:   cmd.type = DISPLAY_CMD_DEALING;
-                          cmd.payload.dealing.progress = 0;
-                          strncpy(cmd.payload.dealing.status, "发牌中", sizeof(cmd.payload.dealing.status));
-                          break;
+    case STATE_DEALING:
+        // 发牌界面由发牌任务负责刷新，避免“开始”屏覆盖发牌错误信息
+        break;
     case STATE_GAME_ACTIVE: cmd.type = DISPLAY_CMD_GAME_ACTIVE; break;
     case STATE_GAME_END:  cmd.type = DISPLAY_CMD_GAME_END;    break;
     default: break;
     }
-    send_display_command(&cmd);
+    if (cmd.type != (display_cmd_type_t)0xFF) send_display_command(&cmd);
 }
 
 void vStateManagerTask(void *pv) {
@@ -81,13 +81,13 @@ void vStateManagerTask(void *pv) {
         case STATE_IDLE:
             if (bits & BIT_DEAL_CONFIRM) {
                 state_transition_to(STATE_DEALING); cur = STATE_DEALING;
-                // 若发牌任务已极快完成/出错，避免丢失完成位
-                if (bits & BIT_DEAL_ERROR)       { state_transition_to(STATE_IDLE); cur = STATE_IDLE; }
-                else if (bits & BIT_DEAL_COMPLETE) { state_transition_to(STATE_GAME_ACTIVE); cur = STATE_GAME_ACTIVE; }
+                // 若发牌任务已极快完成，避免丢失完成位（出错则停在 DEALING 显示错误）
+                if (bits & BIT_DEAL_COMPLETE) { state_transition_to(STATE_GAME_ACTIVE); cur = STATE_GAME_ACTIVE; }
             }
             break;
         case STATE_DEALING:
-            if (bits & BIT_DEAL_ERROR)       { state_transition_to(STATE_IDLE); cur = STATE_IDLE; }
+            if (bits & BIT_RESET) { state_transition_to(STATE_IDLE); cur = STATE_IDLE; }
+            // BIT_DEAL_ERROR：停在 DEALING，屏幕已显示错误，等待编码器按下重置
             else if (bits & BIT_DEAL_COMPLETE) { state_transition_to(STATE_GAME_ACTIVE); cur = STATE_GAME_ACTIVE; }
             break;
         case STATE_GAME_ACTIVE:

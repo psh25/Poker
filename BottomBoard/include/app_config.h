@@ -41,6 +41,19 @@
 
 // ================= 发牌方案（占位：方案 1~4，具体方案待定）=================
 #define SCHEME_COUNT        4
+// 已定义发牌模式的方案：方案四（索引 3）= TEST 测试模式；方案 1~3 未定义，确认后报错等待重置
+#define SCHEME_TEST_INDEX   3
+
+// ================= 发牌模式预设（占位：模式未定，先定共同结构）=================
+#define DECK_COUNT          4     // 牌堆数量（占位）
+#define ROTATE_WAIT_MS      1500  // 步进电机旋转到位等待（ms；实际量产用 INDEX/霍尔到位确认）
+#define DEAL_TOTAL_CARDS    4     // 每局发牌总张数（占位）
+
+// 牌堆位置：步进电机角度（deg，占位值，按实际机械结构调整）
+static const int16_t kDeckAngles[DECK_COUNT] = { 0, 90, 180, 270 };
+
+// 每张牌的目标牌堆（按发牌顺序；占位：依次从 1→4 号牌堆各发一张）
+static const uint8_t kDealDeckSequence[DEAL_TOTAL_CARDS] = { 0, 1, 2, 3 };
 
 // ================= 时序 / 超时（ms）=================
 #define ENCODER_DEBOUNCE_MS    5     // 编码器消抖（架构 v2 异常处理 8.1）

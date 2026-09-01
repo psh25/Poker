@@ -25,7 +25,7 @@
 // 运行时串口命令：auto            → 无限自动发牌
 //                 auto <n>        → 自动发 n 张后停
 //                 auto off        → 停止自动发牌（当前这张发完为止）
-#define AUTO_DEAL_ENABLE 1
+#define AUTO_DEAL_ENABLE 0
 #define AUTO_DEAL_COUNT -1            // 自动发牌张数：-1 = 无限循环；N = 发 N 张后停
 #define AUTO_DEAL_START_DELAY_MS 1000 // 上电延时（ms），留时间取消
 

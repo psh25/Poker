@@ -90,6 +90,14 @@ void proto_rx_byte(uint8_t b) {
 void proto_on_command(const proto_frame_t *frame) {
     bool fromUart = s_uart_frame;
     s_uart_frame = false;
+
+    // 防护：子板只应收到命令（0x01~0x7F）；事件/回执（0x80+，如 EVT_ACK=0x88）
+    // 异常回环时直接忽略、不回 ACK，避免“ACK 套 ACK”自激循环
+    if (frame->type == 0x00 || frame->type >= 0x80) {
+        dbg_printf("[SUB] guard: ignore type=0x%02X (not a command)\n", frame->type);
+        return;
+    }
+
     // 调试①：收到并解析完整命令 → 串口打印 + 回发 ACK（原 type + 原 data 回显）
     dbg_printf("[SUB] RX: cmd=0x%02X len=%u data:", frame->type, frame->len);
     for (uint8_t i = 0; i < frame->len; i++) {

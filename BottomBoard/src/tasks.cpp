@@ -45,6 +45,19 @@ void create_all_tasks(void) {
                             PRIO_BLUETOOTH, NULL, tskNO_AFFINITY);
 }
 
+// ================= 发牌控制：当前发牌运行状态（发牌任务写，CLI/编码器读）=================
+static uint8_t  s_deal_scheme = 0;            // 当前方案（0-based）
+static uint8_t  s_deal_deck = 0;              // 当前目标牌堆（0-based）
+static uint8_t  s_deal_progress = 0;          // 0~100
+static uint16_t s_dealt_count = 0;            // 已成功发出张数
+static bool     s_deal_error_active = false;  // 是否处于发牌错误（等待编码器重置）
+static uint8_t  s_deal_error_count = 0;
+static char     s_deal_errors[DEAL_ERROR_MAX][24];
+
+// 已发牌面数据（摄像头识别结果，按发牌顺序保存；占位，供后续蓝牙/小程序使用）
+static uint8_t  s_dealt_cards[DEAL_TOTAL_CARDS][PROTO_MAX_DATA];
+static uint8_t  s_dealt_lens[DEAL_TOTAL_CARDS];
+
 // ================= 蓝牙通信任务 =================
 void vBluetoothTask(void *pv) {
     // 高(3) | 任意核心 | 队列阻塞（永久）
@@ -68,6 +81,8 @@ void vBluetoothTask(void *pv) {
 static void sub_debug_print_help(void) {
     Serial.println("[CLI] help                         - 本帮助");
     Serial.println("[CLI] state                        - 打印当前状态机状态");
+    Serial.println("[CLI] deal                         - 启动发牌（模拟 IDLE 确认，配合 sim）");
+    Serial.println("[CLI] decks | dealinfo             - 打印牌堆预设 / 发牌进度与错误");
     Serial.println("[CLI] setstate <idle|dealing|active|end> - 强制切换状态（调试）");
     Serial.println("[CLI] sub <cmd> [hex data...]      - 底板→子板（自动组帧+CRC）");
     Serial.println("[CLI]      cmd: deal|stop|status|selftest|reset 或 hex，如 sub 0x03");
@@ -129,6 +144,45 @@ static void sub_debug_cli_process(const char *line) {
         return;
     }
 
+    // deal：模拟 IDLE 下 CONFIRM，启动发牌（配合 sim cardvalue / sim cardout 联调）
+    if (strcmp(line, "deal") == 0) {
+        if (state_get_current() != STATE_IDLE) {
+            Serial.println("[CLI] deal: 仅 IDLE 状态可启动（先 setstate idle 或编码器重置）");
+            return;
+        }
+        xSemaphoreGive(xDealSemaphore);
+        xEventGroupSetBits(xStateEventGroup, BIT_DEAL_CONFIRM);
+        Serial.println("[CLI] deal started（流程：sim cardvalue <hex>... → 第一张免 sim cardout → sim cardout ...）");
+        return;
+    }
+
+    // decks：打印牌堆角度与发牌顺序预设
+    if (strcmp(line, "decks") == 0) {
+        Serial.println("[CLI] deck angles (deg):");
+        for (int i = 0; i < DECK_COUNT; i++) {
+            Serial.printf("  deck %d -> %d\n", i + 1, (int)kDeckAngles[i]);
+        }
+        Serial.print("[CLI] deal sequence (TEST scheme):");
+        for (int i = 0; i < DEAL_TOTAL_CARDS; i++) {
+            Serial.printf(" %d", kDealDeckSequence[i] + 1);
+        }
+        Serial.println();
+        Serial.println("[CLI]   note: 仅方案 4（TEST）有发牌模式，方案 1~3 未定义");
+        return;
+    }
+
+    // dealinfo：发牌进度与错误（多条一并打印）
+    if (strcmp(line, "dealinfo") == 0) {
+        Serial.printf("[CLI] scheme=%u deck=%u dealt=%u/%u progress=%u%% error=%s\n",
+                      s_deal_scheme + 1, s_deal_deck + 1, s_dealt_count,
+                      (unsigned)DEAL_TOTAL_CARDS, s_deal_progress,
+                      s_deal_error_active ? "YES" : "no");
+        for (uint8_t i = 0; i < s_deal_error_count; i++) {
+            Serial.printf("[CLI]   err[%u] %s\n", i, s_deal_errors[i]);
+        }
+        return;
+    }
+
     // setstate <name|n>：调试用，强制切换状态（通过事件组交给状态管理任务执行）
     if (strncmp(line, "setstate ", 9) == 0) {
         struct { const char *name; system_state_t st; } map[] = {
@@ -150,6 +204,16 @@ static void sub_debug_cli_process(const char *line) {
             return;
         }
         xEventGroupSetBits(xStateEventGroup, BIT_TEST_IDLE << st);  // 测试位连续
+        if (st == STATE_DEALING) {
+            // 发牌屏由发牌任务刷新，CLI 强制进入时补一张测试屏
+            display_cmd_t cmd = {};
+            cmd.type = DISPLAY_CMD_DEALING;
+            cmd.payload.dealing.scheme = display_get_selected();
+            cmd.payload.dealing.deck = 1;
+            cmd.payload.dealing.progress = 0;
+            strncpy(cmd.payload.dealing.status, "setstate test", sizeof(cmd.payload.dealing.status) - 1);
+            send_display_command(&cmd);
+        }
         Serial.printf("[CLI] setstate -> %d\n", (int)st);
         return;
     }
@@ -234,7 +298,10 @@ static void sub_debug_cli_process(const char *line) {
         int pct = atoi(line + 8);
         display_cmd_t cmd = {};
         cmd.type = DISPLAY_CMD_DEALING;
+        cmd.payload.dealing.scheme = display_get_selected();
+        cmd.payload.dealing.deck = 1;
         cmd.payload.dealing.progress = (uint8_t)pct;
+        strncpy(cmd.payload.dealing.status, "screen test", sizeof(cmd.payload.dealing.status) - 1);
         send_display_command(&cmd);
         Serial.printf("[CLI] dealing %d%%\n", pct);
         return;
@@ -281,69 +348,159 @@ void vSubboardTask(void *pv) {
 }
 
 // ================= 发牌控制任务 =================
+static bool deal_error_active(void) { return s_deal_error_active; }
+
+static void deal_add_error(const char *msg) {
+    if (s_deal_error_count < DEAL_ERROR_MAX) {
+        strncpy(s_deal_errors[s_deal_error_count], msg, sizeof(s_deal_errors[0]) - 1);
+        s_deal_errors[s_deal_error_count][sizeof(s_deal_errors[0]) - 1] = '\0';
+        s_deal_error_count++;
+    }
+}
+
+// 发牌界面刷新：携带当前牌堆、进度、阶段状态与全部错误
+static void deal_update_screen(const char *status) {
+    display_cmd_t cmd = {};
+    cmd.type = DISPLAY_CMD_DEALING;
+    cmd.payload.dealing.scheme = s_deal_scheme;
+    cmd.payload.dealing.deck = s_deal_deck + 1;
+    cmd.payload.dealing.progress = s_deal_progress;
+    strncpy(cmd.payload.dealing.status, status, sizeof(cmd.payload.dealing.status) - 1);
+    for (uint8_t i = 0; i < s_deal_error_count && i < DEAL_ERROR_MAX; i++) {
+        strncpy(cmd.payload.dealing.errors[i], s_deal_errors[i], sizeof(cmd.payload.dealing.errors[0]) - 1);
+    }
+    cmd.payload.dealing.errorCount = s_deal_error_count;
+    send_display_command(&cmd);
+}
+
+// 发牌失败：向子板发停机 → 屏幕显示错误 → 停在 DEALING 等编码器重置
+static void deal_fail(void) {
+    s_deal_error_active = true;
+    proto_send(CMD_STOP, NULL, 0);            // 底板向子板发送停机信息
+    deal_update_screen("DEAL ERROR");
+    xEventGroupSetBits(xStateEventGroup, BIT_DEAL_ERROR);
+}
+
+// 等待指定类型事件：忽略其他事件；子板 EVT_ERROR_* 记录错误后继续等；超时返回 false
+static bool deal_wait_evt(QueueHandle_t q, uint8_t want, uint32_t timeoutMs, proto_frame_t *out) {
+    uint32_t deadline = millis() + timeoutMs;
+    while ((int32_t)(millis() - deadline) < 0) {
+        proto_frame_t evt;
+        if (xQueueReceive(q, &evt, pdMS_TO_TICKS(50)) != pdPASS) continue;
+        if (evt.type == want) {
+            if (out) *out = evt;
+            return true;
+        }
+        // 子板错误事件：记录后立即返回 false（触发停机），不再等超时
+        if (evt.type == EVT_ERROR_CARD_JAM)         { deal_add_error("sub: card jam"); return false; }
+        else if (evt.type == EVT_ERROR_MOTOR_STALL) { deal_add_error("sub: motor stall"); return false; }
+        else if (evt.type == EVT_ERROR_CAM_FAIL)    { deal_add_error("sub: cam fail"); return false; }
+        // 其他事件（EVT_DEAL_DONE / EVT_CARD_VALUE 等）忽略，继续等目标事件
+    }
+    return false;
+}
+
+// 步进电机：当前未就绪，仅打印“切换到哪个牌堆”并等待到位（模拟）
+static void debug_rotate_to_deck(uint8_t deck) {
+    Serial.printf("[DEAL] 切换到牌堆 %u（角度 %d°），等待 %u ms 到位\n",
+                  deck + 1, (int)kDeckAngles[deck], (unsigned)ROTATE_WAIT_MS);
+    // TODO: TMC 步进旋转 + INDEX/霍尔到位确认；当前只打印 + 延时
+    vTaskDelay(pdMS_TO_TICKS(ROTATE_WAIT_MS));
+}
+
 void vDealTask(void *pv) {
-    // 中高(2) | 固定核心 1 | 信号量触发（编码器确认）
+    // 中高(2) | 固定核心 1 | 信号量触发（IDLE 确认 / CLI deal）
     for (;;) {
         if (xSemaphoreTake(xDealSemaphore, portMAX_DELAY) != pdPASS) continue;
 
+        // 新一轮发牌：清空错误/计数，锁存方案
+        s_deal_error_count = 0;
+        s_deal_error_active = false;
+        s_dealt_count = 0;
+        s_deal_progress = 0;
+        s_deal_deck = 0;
+        s_deal_scheme = display_get_selected();
         busy_deal_step("deal_start");
-        uint16_t dealt = 0;
-        uint16_t total = 1;   // TODO: 从方案参数读取总张数（牌堆数 × 每堆张数）
 
-        while (dealt < total) {
-            // 1) 旋转到目标牌堆（TMC 步进；旋转前拉低 STDBY 唤醒驱动）
-            busy_deal_step("rotate_to_deck");
-
-            // 2) 下发子板发牌指令
-            if (!proto_send(CMD_DEAL_START, NULL, 0)) {
-                // TODO: TX 队列满 / 子板掉线处理
-            }
-
-            // 3) 等待 EVT_CARD_OUT（光敏成功，500ms 超时 = 疑似漏发）
-            proto_frame_t evt;
-            bool ok = false;
-            while (!ok) {
-                if (xQueueReceive(xSubboardRxQueue, &evt, pdMS_TO_TICKS(PHOTO_TIMEOUT_MS)) == pdPASS) {
-                    if (evt.type == EVT_CARD_OUT) {
-                        ok = true;
-                    } else if (evt.type == EVT_ERROR_CARD_JAM) {
-                        // TODO: 漏发重试一次，仍失败 → deal_error
-                        ok = true;
-                    } else if (evt.type == EVT_ERROR_MOTOR_STALL) {
-                        goto deal_error;
-                    }
-                } else {
-                    goto deal_error;   // 光敏超时
-                }
-            }
-
-            // 4) 等待 EVT_CARD_VALUE（摄像头识别，2s 超时）
-            if (xQueueReceive(xCameraQueue, &evt, pdMS_TO_TICKS(CAMERA_TIMEOUT_MS)) == pdPASS) {
-                if (evt.type == EVT_CARD_VALUE) {
-                    xSemaphoreTake(xDeckDataMutex, portMAX_DELAY);
-                    // TODO: 牌堆写入 deckData[deckIdx].cards[dealt] = evt.data（花色/点数）
-                    xSemaphoreGive(xDeckDataMutex);
-                }
-            } else {
-                // 识别超时：按未知牌处理（架构 v2 8.1）
-            }
-            dealt++;
-
-            // 5) 进度显示
-            display_cmd_t cmd = {};
-            cmd.type = DISPLAY_CMD_DEALING;
-            cmd.payload.dealing.progress = (uint8_t)(dealt * 100U / total);
-            strncpy(cmd.payload.dealing.status, "发牌中", sizeof(cmd.payload.dealing.status));
-            send_display_command(&cmd);
+        // 仅“方案四（TEST）”已定义发牌模式；其余方案报“方案未定义”并停机等待编码器重置
+        if (s_deal_scheme != SCHEME_TEST_INDEX) {
+            deal_add_error("scheme undefined");
+            deal_fail();
+            continue;
         }
 
-        // 全部发完 → 状态机 DEALING → GAME_ACTIVE
-        xEventGroupSetBits(xStateEventGroup, BIT_DEAL_COMPLETE);
-        continue;
+        bool prev_out = true;   // 第一张无需确认上一张
 
-    deal_error:
-        // 发牌异常（漏发/多发/卡牌）→ DEALING → IDLE，等待重置
-        xEventGroupSetBits(xStateEventGroup, BIT_DEAL_ERROR);
+        for (uint16_t i = 0; i < DEAL_TOTAL_CARDS && !s_deal_error_active; i++) {
+            uint8_t deck = kDealDeckSequence[i];
+            s_deal_deck = deck;
+            char status[24];
+            proto_frame_t face;
+
+            // 1) 摄像头识别当前（即将发出的）牌面 → EVT_CARD_VALUE
+            snprintf(status, sizeof(status), "wait card %u face", (unsigned)i + 1);
+            deal_update_screen(status);
+            bool haveFace = deal_wait_evt(xCameraQueue, EVT_CARD_VALUE, CAMERA_TIMEOUT_MS, &face);
+            if (!haveFace) {
+                deal_add_error("card face timeout");   // 未识别到牌面 → 立即停机
+                deal_fail();
+                break;
+            }
+
+            // 2) 确认上一张牌成功发出（光敏 EVT_CARD_OUT），或这是第一张
+            if (!prev_out) {
+                deal_update_screen("wait prev card out");
+                if (!deal_wait_evt(xSubboardRxQueue, EVT_CARD_OUT, PHOTO_TIMEOUT_MS, NULL)) {
+                    deal_add_error("prev card not out");
+                    deal_fail();
+                    break;
+                }
+                prev_out = true;
+            }
+
+            // 3) 步进电机转到目标牌堆（打印调试信息 + 等待到位）
+            snprintf(status, sizeof(status), "rotate deck %u", (unsigned)deck + 1);
+            deal_update_screen(status);
+            debug_rotate_to_deck(deck);
+
+            // 4) 下发子板发牌指令
+            snprintf(status, sizeof(status), "deal card %u", (unsigned)i + 1);
+            deal_update_screen(status);
+            if (!proto_send(CMD_DEAL_START, NULL, 0)) {
+                deal_add_error("tx queue full");
+                deal_fail();
+                break;
+            }
+
+            // 5) 等待本张牌发出（光敏 EVT_CARD_OUT）
+            if (!deal_wait_evt(xSubboardRxQueue, EVT_CARD_OUT, PHOTO_TIMEOUT_MS, NULL)) {
+                deal_add_error("card not out");
+                deal_fail();
+                break;
+            }
+            prev_out = true;
+
+            // 保存牌面数据（摄像头识别结果）
+            xSemaphoreTake(xDeckDataMutex, portMAX_DELAY);
+            if (haveFace) {
+                uint8_t n = (face.len < PROTO_MAX_DATA) ? face.len : PROTO_MAX_DATA;
+                memcpy(s_dealt_cards[i], face.data, n);
+                s_dealt_lens[i] = n;
+            } else {
+                s_dealt_lens[i] = 0;
+            }
+            xSemaphoreGive(xDeckDataMutex);
+
+            s_dealt_count++;
+            s_deal_progress = (uint8_t)(s_dealt_count * 100U / DEAL_TOTAL_CARDS);
+            snprintf(status, sizeof(status), "card %u ok", (unsigned)s_dealt_count);
+            deal_update_screen(status);
+        }
+
+        if (s_deal_error_active) continue;   // 错误已显示，等待编码器重置后重新开始
+
+        // 全部发完 → DEALING → GAME_ACTIVE
+        xEventGroupSetBits(xStateEventGroup, BIT_DEAL_COMPLETE);
     }
 }
 
@@ -351,7 +508,8 @@ void vDealTask(void *pv) {
 void vEncoderTask(void *pv) {
     // 中(2) | 任意核心
     // 旋转：1ms 轮询 A/B 相做四态正交解码，累计满一整格（4 次有效跳变）才计一步，抗抖动/噪声
-    // 按键：SW 轮询消抖；短按两段式（确认方案 → CONFIRM 发牌）；GAME_END 短按重置；旋转即取消/改选
+    // 按键：SW 轮询消抖；短按两段式（确认方案 → CONFIRM 发牌）；DEALING 出错/ GAME_END 短按重置；
+    // 旋转只在 IDLE 生效（切换/取消方案），其他状态旋转无反应
     int8_t selection = 0;
     bool press_active = false;
 
@@ -376,11 +534,12 @@ void vEncoderTask(void *pv) {
             if (sw == 0) {
                 // 按下
                 Serial.println("[ENC] SW press");
-                if (s == STATE_IDLE || s == STATE_GAME_END) {
+                if (s == STATE_IDLE || s == STATE_GAME_END ||
+                    (s == STATE_DEALING && deal_error_active())) {
                     press_active = true;
                 }
             } else {
-                // 松开：短按处理（第一次=确认方案，第二次=CONFIRM 发牌；GAME_END=重置）
+                // 松开：短按处理（第一次=确认方案，第二次=CONFIRM 发牌；DEALING 出错/ GAME_END=重置）
                 if (!press_active) continue;
                 press_active = false;
 
@@ -403,6 +562,12 @@ void vEncoderTask(void *pv) {
                         xSemaphoreGive(xDealSemaphore);                       // 确认发牌
                         xEventGroupSetBits(xStateEventGroup, BIT_DEAL_CONFIRM); // IDLE→DEALING
                     }
+                } else if (s == STATE_DEALING) {
+                    // 发牌出错时按下重置到 IDLE；正常发牌中按下无反应
+                    if (deal_error_active()) {
+                        Serial.println("[ENC] reset from DEALING error");
+                        xEventGroupSetBits(xStateEventGroup, BIT_RESET);
+                    }
                 } else if (s == STATE_GAME_END) {
                     xEventGroupSetBits(xStateEventGroup, BIT_RESET);           // GAME_END→IDLE
                 }
@@ -423,26 +588,30 @@ void vEncoderTask(void *pv) {
 
                 if (quad_accum >= 4) {
                     quad_accum = 0;
-                    selection = (int8_t)((selection + 1 + SCHEME_COUNT) % SCHEME_COUNT);
-                    Serial.printf("[ENC] rot +1 sel=%d\n", selection + 1);
-                    display_set_selected((uint8_t)selection);
-                    display_set_confirmed(false);   // 旋转改变选择 → 回到未确认
-                    display_cmd_t cmd = {};
-                    cmd.type = DISPLAY_CMD_SELECT;
-                    cmd.payload.menu.selectedIndex = (uint8_t)selection;
-                    cmd.payload.menu.confirmed = 0;
-                    send_display_command(&cmd);
+                    if (state_get_current() == STATE_IDLE) {   // 交互仅 IDLE 生效
+                        selection = (int8_t)((selection + 1 + SCHEME_COUNT) % SCHEME_COUNT);
+                        Serial.printf("[ENC] rot +1 sel=%d\n", selection + 1);
+                        display_set_selected((uint8_t)selection);
+                        display_set_confirmed(false);   // 旋转改变选择 → 回到未确认
+                        display_cmd_t cmd = {};
+                        cmd.type = DISPLAY_CMD_SELECT;
+                        cmd.payload.menu.selectedIndex = (uint8_t)selection;
+                        cmd.payload.menu.confirmed = 0;
+                        send_display_command(&cmd);
+                    }
                 } else if (quad_accum <= -4) {
                     quad_accum = 0;
-                    selection = (int8_t)((selection - 1 + SCHEME_COUNT) % SCHEME_COUNT);
-                    Serial.printf("[ENC] rot -1 sel=%d\n", selection + 1);
-                    display_set_selected((uint8_t)selection);
-                    display_set_confirmed(false);   // 旋转改变选择 → 回到未确认
-                    display_cmd_t cmd = {};
-                    cmd.type = DISPLAY_CMD_SELECT;
-                    cmd.payload.menu.selectedIndex = (uint8_t)selection;
-                    cmd.payload.menu.confirmed = 0;
-                    send_display_command(&cmd);
+                    if (state_get_current() == STATE_IDLE) {   // 交互仅 IDLE 生效
+                        selection = (int8_t)((selection - 1 + SCHEME_COUNT) % SCHEME_COUNT);
+                        Serial.printf("[ENC] rot -1 sel=%d\n", selection + 1);
+                        display_set_selected((uint8_t)selection);
+                        display_set_confirmed(false);   // 旋转改变选择 → 回到未确认
+                        display_cmd_t cmd = {};
+                        cmd.type = DISPLAY_CMD_SELECT;
+                        cmd.payload.menu.selectedIndex = (uint8_t)selection;
+                        cmd.payload.menu.confirmed = 0;
+                        send_display_command(&cmd);
+                    }
                 }
             }
             prev_state = st;

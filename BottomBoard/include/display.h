@@ -3,6 +3,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#define DEAL_ERROR_MAX 3   // 发牌界面最多同时显示的错误条数
+
 /**
  * 屏幕显示：事件驱动（架构 v2 附录 A）
  * 显示任务只展示、不决策；其他任务通过 send_display_command 发命令。
@@ -23,7 +25,14 @@ typedef struct {
     display_cmd_type_t type;
     union {
         struct { uint8_t selectedIndex; uint8_t confirmed; char menuList[4][16]; } menu;
-        struct { uint8_t progress; char status[20]; } dealing;
+        struct {
+            uint8_t progress;                       // 0~100
+            uint8_t scheme;                         // 0-based 方案索引
+            uint8_t deck;                           // 1-based 当前牌堆
+            char status[24];                        // 当前阶段（如 rotate deck 2）
+            char errors[DEAL_ERROR_MAX][24];        // 错误列表（多条一并显示）
+            uint8_t errorCount;
+        } dealing;
         struct { char cardInfo[32]; uint8_t remaining; } game;
         struct { char result[32]; uint32_t totalCards; } gameEnd;
         struct { char errorMsg[32]; } error;

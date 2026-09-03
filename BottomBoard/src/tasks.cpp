@@ -1,7 +1,7 @@
 /**
  * 底板全部 RTOS 任务（架构 v2 第三章）
  * 时序要点：
- *   - 蓝牙：高(3)，队列阻塞，永久等待
+ *   - 蓝牙：高(3)，BLE(NUS) RX 队列 + 帧解析，收主机命令 / 发状态帧
  *   - 子板通信：中(2)，固定核心 0，队列 + 串口轮询（20ms 节拍）
  *   - 发牌控制：中高(2)，固定核心 1，信号量触发；光敏 500ms / 摄像头 2s 超时
  *   - 编码器：中(2)，轮询 + 消抖，旋转切换/取消、短按确认
@@ -26,6 +26,11 @@
 #include "protocol.h"
 #include "display.h"
 #include "hardware.h"
+#include "ble_comms.h"
+
+// ---- 主机（BLE 小程序）帧解析：与板间共用同一帧格式与解析器 ----
+static proto_rx_t s_host_rx;
+static void host_handle_frame(const proto_frame_t *frame);   // 完整主机命令帧 → 执行动作
 
 void create_all_tasks(void) {
     // 按优先级从低到高创建（避免高优先级任务先于低优先级运行）
@@ -60,21 +65,114 @@ static uint8_t  s_dealt_lens[DEAL_TOTAL_CARDS];
 
 // ================= 蓝牙通信任务 =================
 void vBluetoothTask(void *pv) {
-    // 高(3) | 任意核心 | 队列阻塞（永久）
-    // TODO: BLE 初始化（ESP32-S3 内置），连接小程序；协议待定义
+    // 高(3) | 任意核心 | 队列阻塞
+    // BLE 初始化在 setup()（见 main.cpp）；本任务把 RX 特征收到的字节
+    // 用与板间同一套帧解析器解析成主机命令，交给 host_handle_frame。
+    proto_rx_init(&s_host_rx, host_handle_frame);
     bt_msg_t rx;
-    bt_msg_t tx;
     for (;;) {
-        // 接收：小程序指令（选牌、查询状态）
-        if (xQueueReceive(xBluetoothRxQueue, &rx, pdMS_TO_TICKS(10)) == pdPASS) {
-            // TODO: 选牌指令 → 显示预览；查询指令 → 状态管理
+        if (xQueueReceive(xBluetoothRxQueue, &rx, pdMS_TO_TICKS(100)) == pdPASS) {
+            for (uint8_t i = 0; i < rx.len; i++) {
+                proto_rx_feed(&s_host_rx, rx.data[i]);
+            }
         }
-        // 发送：牌堆信息、发牌状态
-        if (xQueueReceive(xBluetoothTxQueue, &tx, 0) == pdPASS) {
-            // TODO: 经 BLE 发送
-        }
-        busy_bluetooth();
     }
+}
+
+// ================= 主机命令：BLE 帧与串口 CLI 共用同一动作（同一功能三种场景）=================
+// 发一帧给主机（BLE 已连接才真正 notify，并打印调试）
+static void host_send(const proto_frame_t *frame) {
+    uint8_t buf[64];
+    size_t n = proto_build_frame(buf, frame);
+    if (ble_send(buf, n)) {
+        Serial.printf("[HOST] TX type=0x%02X len=%u\n", frame->type, frame->len);
+    }
+}
+
+// 回执（镜像子板 EVT_ACK 语义：data = 原 type + 原 data）
+static void host_ack(const proto_frame_t *frame) {
+    proto_frame_t ack = {};
+    ack.type = HOST_EVT_ACK;
+    ack.data[0] = frame->type;
+    ack.len = 1;
+    uint8_t copy = (frame->len < PROTO_MAX_DATA - 1) ? frame->len : (PROTO_MAX_DATA - 1);
+    if (copy) memcpy(&ack.data[1], frame->data, copy);
+    ack.len += copy;
+    host_send(&ack);
+}
+
+// 状态通知（0x91：state / scheme / confirmed）
+void host_notify_state(uint8_t state) {
+    proto_frame_t evt = {};
+    evt.type = HOST_EVT_STATE;
+    evt.len = 3;
+    evt.data[0] = state;
+    evt.data[1] = display_get_selected();
+    evt.data[2] = display_get_confirmed() ? 1 : 0;
+    host_send(&evt);
+}
+
+static void host_action_select(uint8_t idx) {
+    if (state_get_current() != STATE_IDLE) { Serial.println("[HOST] select: 仅 IDLE 有效"); return; }
+    if (idx >= SCHEME_COUNT) { Serial.println("[HOST] select: 越界"); return; }
+    display_set_selected(idx);
+    display_set_confirmed(false);
+    display_cmd_t cmd = {};
+    cmd.type = DISPLAY_CMD_SELECT;
+    cmd.payload.menu.selectedIndex = idx;
+    cmd.payload.menu.confirmed = 0;
+    send_display_command(&cmd);
+}
+
+static void host_action_confirm(void) {
+    if (state_get_current() != STATE_IDLE) { Serial.println("[HOST] confirm: 仅 IDLE 有效"); return; }
+    if (display_get_confirmed()) { Serial.println("[HOST] confirm: 已确认，再次发牌请发 0x01"); return; }
+    display_set_confirmed(true);
+    display_cmd_t cmd = {};
+    cmd.type = DISPLAY_CMD_SELECT;
+    cmd.payload.menu.selectedIndex = display_get_selected();
+    cmd.payload.menu.confirmed = 1;
+    send_display_command(&cmd);
+}
+
+static void host_action_deal_start(void) {
+    if (state_get_current() != STATE_IDLE) { Serial.println("[HOST] deal: 仅 IDLE 可启动"); return; }
+    xSemaphoreGive(xDealSemaphore);
+    xEventGroupSetBits(xStateEventGroup, BIT_DEAL_CONFIRM);
+}
+
+static void host_action_stop(void) {
+    proto_send(CMD_STOP, NULL, 0);                        // 停机子板
+    xEventGroupSetBits(xStateEventGroup, BIT_RESET);      // 底板回 IDLE
+}
+
+static void host_action_reset(void) {
+    proto_send(CMD_RESET, NULL, 0);                       // 复位子板状态机
+    xEventGroupSetBits(xStateEventGroup, BIT_RESET);      // 底板回 IDLE
+}
+
+static void host_action_status(void) {
+    host_notify_state((uint8_t)state_get_current());
+}
+
+// 完整主机命令帧分发（BLE / 未来串口二进制帧共用）
+static void host_handle_frame(const proto_frame_t *frame) {
+    Serial.printf("[HOST] RX type=0x%02X len=%u\n", frame->type, frame->len);
+    switch (frame->type) {
+    case CMD_DEAL_START:   host_action_deal_start(); break;
+    case CMD_STOP:         host_action_stop();       break;
+    case CMD_STATUS_QUERY: host_action_status();     break;
+    case CMD_SELF_TEST:    proto_send(CMD_SELF_TEST, NULL, 0); break;  // 转发子板自检
+    case CMD_RESET:        host_action_reset();      break;
+    case HOST_CMD_SELECT_SCHEME:
+        if (frame->len >= 1) host_action_select(frame->data[0]);
+        break;
+    case HOST_CMD_CONFIRM_SCHEME: host_action_confirm(); break;
+    default:
+        Serial.printf("[HOST] unknown type=0x%02X\n", frame->type);
+        break;
+    }
+    host_ack(frame);   // 统一回执（与子板 ACK 同语义）
 }
 
 // ================= 调试 CLI：电脑串口 → 底板 / 子板 =================
@@ -83,6 +181,8 @@ static void sub_debug_print_help(void) {
     Serial.println("[CLI] state                        - 打印当前状态机状态");
     Serial.println("[CLI] deal                         - 启动发牌（模拟 IDLE 确认，配合 sim）");
     Serial.println("[CLI] decks | dealinfo             - 打印牌堆预设 / 发牌进度与错误");
+    Serial.println("[CLI] stop | reset                  - 停机回 IDLE / 复位（含子板）");
+    Serial.println("[CLI] confirm                       - 确认当前方案（两段式第一步）");
     Serial.println("[CLI] setstate <idle|dealing|active|end> - 强制切换状态（调试）");
     Serial.println("[CLI] sub <cmd> [hex data...]      - 底板→子板（自动组帧+CRC）");
     Serial.println("[CLI]      cmd: deal|stop|status|selftest|reset 或 hex，如 sub 0x03");
@@ -150,9 +250,27 @@ static void sub_debug_cli_process(const char *line) {
             Serial.println("[CLI] deal: 仅 IDLE 状态可启动（先 setstate idle 或编码器重置）");
             return;
         }
-        xSemaphoreGive(xDealSemaphore);
-        xEventGroupSetBits(xStateEventGroup, BIT_DEAL_CONFIRM);
-        Serial.println("[CLI] deal started（流程：sim cardvalue <hex>... → 第一张免 sim cardout → sim cardout ...）");
+        host_action_deal_start();
+        Serial.println("[CLI] deal started（0x01；流程：sim cardvalue <hex>... → sim cardout ...）");
+        return;
+    }
+
+    // stop / reset / confirm：与 BLE 主机命令同动作（同一功能）
+    if (strcmp(line, "stop") == 0) {
+        host_action_stop();
+        Serial.println("[CLI] stop（0x02）：已向子板发 CMD_STOP，底板回 IDLE");
+        return;
+    }
+    if (strcmp(line, "reset") == 0) {
+        host_action_reset();
+        Serial.println("[CLI] reset（0x05）：已向子板发 CMD_RESET，底板回 IDLE");
+        return;
+    }
+    if (strcmp(line, "confirm") == 0) {
+        host_action_confirm();
+        if (state_get_current() == STATE_IDLE && display_get_confirmed()) {
+            Serial.println("[CLI] confirm（0x11）：方案已确认，再发 deal/0x01 开始发牌");
+        }
         return;
     }
 
@@ -284,14 +402,8 @@ static void sub_debug_cli_process(const char *line) {
     if (strncmp(line, "select ", 7) == 0) {
         int n = atoi(line + 7);
         if (n < 1 || n > SCHEME_COUNT) { Serial.printf("[CLI] select: 范围 1~%d\n", SCHEME_COUNT); return; }
-        display_set_selected((uint8_t)(n - 1));
-        display_set_confirmed(false);   // CLI 直接改方案 → 视为未确认
-        display_cmd_t cmd = {};
-        cmd.type = DISPLAY_CMD_SELECT;
-        cmd.payload.menu.selectedIndex = (uint8_t)(n - 1);
-        cmd.payload.menu.confirmed = 0;
-        send_display_command(&cmd);
-        Serial.printf("[CLI] select scheme %d\n", n);
+        host_action_select((uint8_t)(n - 1));
+        Serial.printf("[CLI] select scheme %d（0x10）\n", n);
         return;
     }
     if (strncmp(line, "dealing ", 8) == 0) {
@@ -319,6 +431,8 @@ void vSubboardTask(void *pv) {
     static uint8_t s_cli_len = 0;
 
     Serial.println("[CLI] type 'help' for subboard command list");
+    static proto_rx_t s_sub_rx;
+    proto_rx_init(&s_sub_rx, proto_on_event);
 
     for (;;) {
         // 0) 调试②：解析底板 USB 串口命令行，转发给子板
@@ -341,7 +455,7 @@ void vSubboardTask(void *pv) {
         }
         // 2) 接收并解析子板上报（事件由 proto_on_event 分发）
         while (Serial1.available() > 0) {
-            proto_rx_byte((uint8_t)Serial1.read());
+            proto_rx_feed(&s_sub_rx, (uint8_t)Serial1.read());
         }
         // TODO: 掉线检测：超过 COMM_DEAD_TIMEOUT_MS 无数据 → 通知发牌任务暂停
     }

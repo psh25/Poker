@@ -49,12 +49,41 @@ typedef struct {
     uint8_t data[PROTO_MAX_DATA];
 } proto_frame_t;
 
+// ---- 主机（小程序 BLE / 串口 CLI）↔ 底板：与板间命令同语义复用 ----
+// 0x01 发牌 / 0x02 停机 / 0x03 查询 / 0x04 自检 / 0x05 重置 与底板→子板命令同号，
+// 底板收到后执行“底板级动作”，其中需要子板的再由底板转发板间帧；
+// 底板级独有操作使用 0x10+，底板 → 主机回执/状态使用 0x90+。
+typedef enum {
+    HOST_CMD_SELECT_SCHEME  = 0x10,  // data[0] = 方案索引 0~SCHEME_COUNT-1
+    HOST_CMD_CONFIRM_SCHEME = 0x11,  // 确认当前方案（两段式第一步）
+} host_cmd_t;
+
+typedef enum {
+    HOST_EVT_ACK   = 0x90,  // data = 原 type + 原 data（调试回执，镜像 EVT_ACK 语义）
+    HOST_EVT_STATE = 0x91,  // data = [state, scheme, confirmed]
+} host_evt_t;
+
+// ---- 接收解析器（可多实例：Serial1 子板事件 / BLE 主机命令共用同一解析逻辑）----
+typedef void (*proto_frame_cb_t)(const proto_frame_t *frame);
+
+typedef struct {
+    uint8_t state;              // 内部解析状态（RX_IDLE/RX_TYPE/...）
+    proto_frame_t frame;
+    uint8_t idx;
+    proto_frame_cb_t on_frame;  // 完整帧回调（按通道分发）
+} proto_rx_t;
+
+void proto_rx_init(proto_rx_t *rx, proto_frame_cb_t on_frame);
+void proto_rx_feed(proto_rx_t *rx, uint8_t b);
+
 uint8_t proto_crc8(const uint8_t *buf, size_t len);
 
 // 发送：入 xSubboardTxQueue，由子板通信任务统一写串口
 bool proto_send(uint8_t type, const uint8_t *data, uint8_t len);
 
+// 把帧组装成字节流（帧头..帧尾，含 CRC），返回长度；供板间写串口 / BLE notify 复用
+size_t proto_build_frame(uint8_t *buf, const proto_frame_t *frame);
+
 // 子板通信任务使用：
 void proto_write_frame(const proto_frame_t *frame);  // 实际写 Serial1
-void proto_rx_byte(uint8_t b);                       // 喂给接收解析状态机
 void proto_on_event(const proto_frame_t *frame);     // 解析完成的事件分发

@@ -37,6 +37,12 @@ bool proto_send(uint8_t type, const uint8_t *data, uint8_t len) {
 // 子板通信任务调用：把一帧写入串口
 void proto_write_frame(const proto_frame_t *frame) {
     uint8_t buf[64];   // 最大帧长 = 1+1+1+32+1+1 = 37B
+    uint8_t n = (uint8_t)proto_build_frame(buf, frame);
+    Serial1.write(buf, n);
+}
+
+// 组帧：帧头 | type | len | data | crc8 | 帧尾
+size_t proto_build_frame(uint8_t *buf, const proto_frame_t *frame) {
     uint8_t n = 0;
     buf[n++] = PROTO_HEADER;
     buf[n++] = frame->type;
@@ -45,45 +51,48 @@ void proto_write_frame(const proto_frame_t *frame) {
     n += frame->len;
     buf[n++] = proto_crc8(&buf[1], 2 + frame->len);   // 校验 type+len+data
     buf[n++] = PROTO_TAIL;
-    Serial1.write(buf, n);
+    return n;
 }
 
 // ---- 接收解析状态机 ----
 typedef enum { RX_IDLE, RX_TYPE, RX_LEN, RX_DATA, RX_CRC, RX_TAIL } rx_state_t;
-static rx_state_t s_rx = RX_IDLE;
-static proto_frame_t s_frame;
-static uint8_t s_idx = 0;
 
-void proto_rx_byte(uint8_t b) {
-    switch (s_rx) {
+void proto_rx_init(proto_rx_t *rx, proto_frame_cb_t on_frame) {
+    memset(rx, 0, sizeof(*rx));
+    rx->state = RX_IDLE;
+    rx->on_frame = on_frame;
+}
+
+void proto_rx_feed(proto_rx_t *rx, uint8_t b) {
+    switch (rx->state) {
     case RX_IDLE:
-        if (b == PROTO_HEADER) s_rx = RX_TYPE;
+        if (b == PROTO_HEADER) rx->state = RX_TYPE;
         break;
     case RX_TYPE:
-        s_frame.type = b;
-        s_rx = RX_LEN;
+        rx->frame.type = b;
+        rx->state = RX_LEN;
         break;
     case RX_LEN:
-        if (b > PROTO_MAX_DATA) { s_rx = RX_IDLE; break; }  // 非法长度，丢弃
-        s_frame.len = b;
-        s_idx = 0;
-        s_rx = s_frame.len ? RX_DATA : RX_CRC;
+        if (b > PROTO_MAX_DATA) { rx->state = RX_IDLE; break; }  // 非法长度，丢弃
+        rx->frame.len = b;
+        rx->idx = 0;
+        rx->state = rx->frame.len ? RX_DATA : RX_CRC;
         break;
     case RX_DATA:
-        s_frame.data[s_idx++] = b;
-        if (s_idx >= s_frame.len) s_rx = RX_CRC;
+        rx->frame.data[rx->idx++] = b;
+        if (rx->idx >= rx->frame.len) rx->state = RX_CRC;
         break;
     case RX_CRC: {
-        uint8_t crc = proto_crc8((const uint8_t *)&s_frame.type, 2 + s_frame.len);
-        s_rx = (crc == b) ? RX_TAIL : RX_IDLE;   // 校验失败直接丢弃
+        uint8_t crc = proto_crc8((const uint8_t *)&rx->frame.type, 2 + rx->frame.len);
+        rx->state = (crc == b) ? RX_TAIL : RX_IDLE;   // 校验失败直接丢弃
         break;
     }
     case RX_TAIL:
-        if (b == PROTO_TAIL) proto_on_event(&s_frame);
-        s_rx = RX_IDLE;
+        if (b == PROTO_TAIL && rx->on_frame) rx->on_frame(&rx->frame);
+        rx->state = RX_IDLE;
         break;
     default:
-        s_rx = RX_IDLE;
+        rx->state = RX_IDLE;
         break;
     }
 }

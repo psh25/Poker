@@ -20,6 +20,7 @@
 #include "tasks.h"
 #include "hardware.h"
 #include "display.h"
+#include "ble_comms.h"
 
 void setup() {
     Serial.begin(115200);              // CH340 调试串口（UART0）
@@ -28,6 +29,7 @@ void setup() {
 
     init_hardware();                   // 1
     create_itc();                      // 2
+    ble_init();                        // 2.1 BLE(NUS)：收小程序命令帧 / 发状态帧
     init_interrupts();                 // 2.5 中断挂接（依赖内核对象）
     tmc2209_init();                    // 3
     hall_homing();                     // 4

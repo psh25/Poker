@@ -12,6 +12,7 @@
 #include "state_machine.h"
 #include "display.h"
 #include "hardware.h"
+#include "tasks.h"
 
 static system_state_t g_current = STATE_IDLE;
 
@@ -54,6 +55,9 @@ void state_transition_to(system_state_t next) {
     default: break;
     }
     if (cmd.type != (display_cmd_type_t)0xFF) send_display_command(&cmd);
+
+    // 状态变化 → 主机（BLE 0x91；未连接时仅打印逻辑跳过）
+    host_notify_state((uint8_t)next);
 }
 
 void vStateManagerTask(void *pv) {

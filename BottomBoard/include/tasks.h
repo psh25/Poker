@@ -7,6 +7,9 @@
 
 void create_all_tasks(void);
 
+// 状态变化 → 主机（BLE notify 0x91），由状态管理任务在切换后调用
+void host_notify_state(uint8_t state);
+
 void vBluetoothTask(void *pv);      // 高(3)   队列阻塞
 void vSubboardTask(void *pv);       // 中(2)   队列 + 串口，固定核心 0
 void vDealTask(void *pv);           // 中高(2) 信号量触发，固定核心 1

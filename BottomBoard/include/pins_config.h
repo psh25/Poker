@@ -10,11 +10,8 @@
 #define PIN_TMC_STEP   4   // 步进脉冲
 #define PIN_TMC_DIR    5   // 方向
 #define PIN_TMC_ENN    6   // 使能（高=断电，低=工作）
-#define PIN_TMC_DIAG   7   // 硬件堵转检测（中断）
-#define PIN_TMC_INDEX  15  // 一圈索引脉冲（失步校准）
-#define PIN_TMC_STDBY  16  // 休眠（低=唤醒，高=休眠）
-#define PIN_TMC_TX     17  // 单线 UART 发送（1K 电阻接 PDN_UART）
-#define PIN_TMC_RX     18  // 单线 UART 接收（1K 电阻靠近 TMC 侧）
+#define PIN_TMC_TX     17  // 单线 UART 发送（串 1K 电阻接 PDN_UART）
+#define PIN_TMC_RX     18  // 单线 UART 接收（不串电阻，直连 PDN_UART）
 
 // ---- A3144 霍尔零点传感器 ----
 #define PIN_HALL       1   // 必须 INPUT_PULLUP

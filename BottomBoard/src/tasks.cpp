@@ -3,7 +3,7 @@
  * 时序要点：
  *   - 蓝牙：高(3)，BLE(NUS) RX 队列 + 帧解析，收主机命令 / 发状态帧
  *   - 子板通信：中(2)，固定核心 0，队列 + 串口轮询（20ms 节拍）
- *   - 发牌控制：中高(2)，固定核心 1，信号量触发；光敏 500ms / 摄像头 2s 超时
+ *   - 发牌控制：中高(2)，固定核心 1，信号量触发；光敏 500ms / 摄像头约 0.5s（临时测试）
  *   - 编码器：中(2)，轮询 + 消抖，旋转切换/取消、短按确认
  *   - 显示：低(1)，队列阻塞（事件驱动）
  *   - 状态管理：低(1)，事件组阻塞（协调器）
@@ -58,6 +58,8 @@ static uint16_t s_dealt_count = 0;            // 已成功发出张数
 static bool     s_deal_error_active = false;  // 是否处于发牌错误（等待编码器重置）
 static uint8_t  s_deal_error_count = 0;
 static char     s_deal_errors[DEAL_ERROR_MAX][24];
+// 方案四（TEST）自动模拟摄像头/光敏事件（默认开启；真实外设就绪后用 CLI simauto off 关闭）
+static bool     s_sim_auto = true;
 
 // 已发牌面数据（摄像头识别结果，按发牌顺序保存；占位，供后续蓝牙/小程序使用）
 static uint8_t  s_dealt_cards[DEAL_TOTAL_CARDS][PROTO_MAX_DATA];
@@ -179,6 +181,8 @@ static void host_handle_frame(const proto_frame_t *frame) {
 static void sub_debug_print_help(void) {
     Serial.println("[CLI] help                         - 本帮助");
     Serial.println("[CLI] state                        - 打印当前状态机状态");
+    Serial.println("[CLI] tmc                          - 显示 TMC UART 状态与电流档");
+    Serial.println("[CLI] tmc hold <0-31>              - 运行时调整停转保持电流档 IHOLD");
     Serial.println("[CLI] deal                         - 启动发牌（模拟 IDLE 确认，配合 sim）");
     Serial.println("[CLI] decks | dealinfo             - 打印牌堆预设 / 发牌进度与错误");
     Serial.println("[CLI] stop | reset                  - 停机回 IDLE / 复位（含子板）");
@@ -188,6 +192,7 @@ static void sub_debug_print_help(void) {
     Serial.println("[CLI]      cmd: deal|stop|status|selftest|reset 或 hex，如 sub 0x03");
     Serial.println("[CLI] sim <type> [hex data...]     - 模拟子板→底板事件（喂给协议分发）");
     Serial.println("[CLI]      type: ready|cardout|cardvalue|dealdone|jam|motorstall|camfail|ack 或 hex");
+    Serial.println("[CLI] simauto [on|off]             - 方案四自动模拟摄像头(0.5s)/光敏(默认 on)");
     Serial.println("[CLI] idle | select <n> | dealing <pct> - 底板屏幕测试");
 }
 
@@ -244,6 +249,27 @@ static void sub_debug_cli_process(const char *line) {
         return;
     }
 
+    // tmc / tmc hold <n>：诊断 TMC2209 UART 与保持电流（无需重新编译即可调参）
+    if (strcmp(line, "tmc") == 0) {
+        Serial.printf("[CLI] TMC UART=%s RUN_CS=%u HOLD_CS=%u\n",
+                      tmc_uart_ready() ? "OK" : "FAIL",
+                      (unsigned)TMC_RUN_CS, (unsigned)TMC_HOLD_CS);
+        return;
+    }
+    if (strncmp(line, "tmc hold ", 9) == 0) {
+        int v = atoi(line + 9);
+        if (v < 0 || v > 31) {
+            Serial.println("[CLI] tmc hold: 范围 0~31");
+            return;
+        }
+        if (tmc_set_hold_current((uint8_t)v)) {
+            Serial.printf("[CLI] IHOLD -> %d\n", v);
+        } else {
+            Serial.println("[CLI] tmc hold: UART 未就绪（先检查接线，见开机 [TMC] 信息）");
+        }
+        return;
+    }
+
     // deal：模拟 IDLE 下 CONFIRM，启动发牌（配合 sim cardvalue / sim cardout 联调）
     if (strcmp(line, "deal") == 0) {
         if (state_get_current() != STATE_IDLE) {
@@ -285,7 +311,7 @@ static void sub_debug_cli_process(const char *line) {
             Serial.printf(" %d", kDealDeckSequence[i] + 1);
         }
         Serial.println();
-        Serial.println("[CLI]   note: 仅方案 4（TEST）有发牌模式，方案 1~3 未定义");
+        Serial.println("[CLI]   note: 方案3=旋转测试(不发牌)，方案4=TEST发牌，方案1~2未定义");
         return;
     }
 
@@ -386,6 +412,23 @@ static void sub_debug_cli_process(const char *line) {
         if (len) memcpy(frame.data, data, len);
         Serial.printf("[CLI] ~ sim EVT 0x%02X len=%u -> proto_on_event\n", type, len);
         proto_on_event(&frame);
+        return;
+    }
+
+    // simauto [on|off]：方案四（TEST）自动模拟摄像头识别与光敏确认
+    if (strcmp(line, "simauto") == 0 || strncmp(line, "simauto ", 8) == 0) {
+        if (line[7] == ' ') {
+            const char *p = line + 8;
+            if (strcmp(p, "on") == 0)  { s_sim_auto = true; }
+            else if (strcmp(p, "off") == 0) { s_sim_auto = false; }
+            else {
+                Serial.println("[CLI] simauto: on|off（或直接 simauto 查看状态）");
+                return;
+            }
+        }
+        Serial.printf("[CLI] simauto = %s（仅方案四 TEST 生效：摄像头 %u ms / 光敏 %u ms 自动注入）\n",
+                      s_sim_auto ? "ON" : "OFF",
+                      (unsigned)SIM_CAMERA_DELAY_MS, (unsigned)SIM_PHOTO_DELAY_MS);
         return;
     }
 
@@ -495,10 +538,32 @@ static void deal_fail(void) {
     xEventGroupSetBits(xStateEventGroup, BIT_DEAL_ERROR);
 }
 
-// 等待指定类型事件：忽略其他事件；子板 EVT_ERROR_* 记录错误后继续等；超时返回 false
-static bool deal_wait_evt(QueueHandle_t q, uint8_t want, uint32_t timeoutMs, proto_frame_t *out) {
-    uint32_t deadline = millis() + timeoutMs;
+// 方案四测试：自动补发事件参数（摄像头/光敏未就绪时使用）
+typedef struct {
+    uint8_t  type;                  // 自动注入的事件类型
+    uint8_t  len;
+    uint8_t  data[PROTO_MAX_DATA];
+    uint32_t delayMs;               // 开始等待该时长后注入
+} deal_sim_t;
+
+// 等待指定类型事件：忽略其他事件；子板 EVT_ERROR_* 记录错误后立即返回 false；
+// sim 非空且超过 sim->delayMs 仍无真实事件时，自动注入模拟事件；超时返回 false
+static bool deal_wait_evt_core(QueueHandle_t q, uint8_t want, uint32_t timeoutMs,
+                               proto_frame_t *out, const deal_sim_t *sim) {
+    uint32_t start = millis();
+    uint32_t deadline = start + timeoutMs;
+    bool injected = false;
     while ((int32_t)(millis() - deadline) < 0) {
+        if (sim && !injected && (uint32_t)(millis() - start) >= sim->delayMs) {
+            injected = true;
+            proto_frame_t f = {};
+            f.type = sim->type;
+            f.len = sim->len;
+            if (sim->len) memcpy(f.data, sim->data, sim->len);
+            Serial.printf("[SIM] auto 0x%02X len=%u after %u ms\n",
+                          f.type, f.len, (unsigned)sim->delayMs);
+            xQueueSend(q, &f, 0);
+        }
         proto_frame_t evt;
         if (xQueueReceive(q, &evt, pdMS_TO_TICKS(50)) != pdPASS) continue;
         if (evt.type == want) {
@@ -514,12 +579,15 @@ static bool deal_wait_evt(QueueHandle_t q, uint8_t want, uint32_t timeoutMs, pro
     return false;
 }
 
-// 步进电机：当前未就绪，仅打印“切换到哪个牌堆”并等待到位（模拟）
-static void debug_rotate_to_deck(uint8_t deck) {
-    Serial.printf("[DEAL] 切换到牌堆 %u（角度 %d°），等待 %u ms 到位\n",
-                  deck + 1, (int)kDeckAngles[deck], (unsigned)ROTATE_WAIT_MS);
-    // TODO: TMC 步进旋转 + INDEX/霍尔到位确认；当前只打印 + 延时
-    vTaskDelay(pdMS_TO_TICKS(ROTATE_WAIT_MS));
+static bool deal_wait_evt(QueueHandle_t q, uint8_t want, uint32_t timeoutMs, proto_frame_t *out) {
+    return deal_wait_evt_core(q, want, timeoutMs, out, NULL);
+}
+
+// 底盘转盘转到目标牌堆（AccelStepper 实际转动；超时返回 false）
+static bool rotate_to_deck(uint8_t deck) {
+    Serial.printf("[DEAL] rotate to deck %u (angle %d deg)\n",
+                  deck + 1, (int)kDeckAngles[deck]);
+    return chassis_rotate_to_angle(kDeckAngles[deck]);
 }
 
 void vDealTask(void *pv) {
@@ -536,13 +604,34 @@ void vDealTask(void *pv) {
         s_deal_scheme = display_get_selected();
         busy_deal_step("deal_start");
 
-        // 仅“方案四（TEST）”已定义发牌模式；其余方案报“方案未定义”并停机等待编码器重置
+        // 方案三（ROTATE_TEST）：不发牌，底盘连续转 ROTATE_TEST_TOPTURNS 圈后自动回 IDLE
+        if (s_deal_scheme == SCHEME_ROTATE_TEST_INDEX) {
+            char status[24];
+            snprintf(status, sizeof(status), "rotate %u turns", (unsigned)ROTATE_TEST_TOPTURNS);
+            deal_update_screen(status);
+            Serial.printf("[TEST3] continuous rotate %u top turns ...\n",
+                          (unsigned)ROTATE_TEST_TOPTURNS);
+            if (!chassis_rotate_turns((int32_t)ROTATE_TEST_TOPTURNS)) {
+                deal_add_error("rotate test timeout");
+                deal_fail();
+                continue;
+            }
+            s_deal_progress = 100;
+            deal_update_screen("rotate test done");
+            Serial.println("[TEST3] done, back to IDLE");
+            xEventGroupSetBits(xStateEventGroup, BIT_RESET);
+            continue;
+        }
+
+        // 仅“方案四（TEST）”已定义发牌模式；方案 1~2 报“方案未定义”并停机等待编码器重置
         if (s_deal_scheme != SCHEME_TEST_INDEX) {
             deal_add_error("scheme undefined");
             deal_fail();
             continue;
         }
 
+        // 方案四测试：摄像头/光敏未就绪时自动模拟（真实外设接好后用 simauto off 关闭）
+        bool simOn = s_sim_auto;
         bool prev_out = true;   // 第一张无需确认上一张
 
         for (uint16_t i = 0; i < DEAL_TOTAL_CARDS && !s_deal_error_active; i++) {
@@ -550,11 +639,19 @@ void vDealTask(void *pv) {
             s_deal_deck = deck;
             char status[24];
             proto_frame_t face;
+            deal_sim_t sim = {};
 
             // 1) 摄像头识别当前（即将发出的）牌面 → EVT_CARD_VALUE
             snprintf(status, sizeof(status), "wait card %u face", (unsigned)i + 1);
             deal_update_screen(status);
-            bool haveFace = deal_wait_evt(xCameraQueue, EVT_CARD_VALUE, CAMERA_TIMEOUT_MS, &face);
+            if (simOn) {
+                sim.type = EVT_CARD_VALUE;
+                sim.len = 1;
+                sim.data[0] = (uint8_t)(i + 1);   // 模拟牌面（占位：本局第几张）
+                sim.delayMs = SIM_CAMERA_DELAY_MS;
+            }
+            bool haveFace = deal_wait_evt_core(xCameraQueue, EVT_CARD_VALUE, CAMERA_TIMEOUT_MS,
+                                               &face, simOn ? &sim : NULL);
             if (!haveFace) {
                 deal_add_error("card face timeout");   // 未识别到牌面 → 立即停机
                 deal_fail();
@@ -564,7 +661,9 @@ void vDealTask(void *pv) {
             // 2) 确认上一张牌成功发出（光敏 EVT_CARD_OUT），或这是第一张
             if (!prev_out) {
                 deal_update_screen("wait prev card out");
-                if (!deal_wait_evt(xSubboardRxQueue, EVT_CARD_OUT, PHOTO_TIMEOUT_MS, NULL)) {
+                if (simOn) { sim.type = EVT_CARD_OUT; sim.len = 0; sim.delayMs = SIM_PHOTO_DELAY_MS; }
+                if (!deal_wait_evt_core(xSubboardRxQueue, EVT_CARD_OUT, PHOTO_TIMEOUT_MS, NULL,
+                                        simOn ? &sim : NULL)) {
                     deal_add_error("prev card not out");
                     deal_fail();
                     break;
@@ -575,7 +674,11 @@ void vDealTask(void *pv) {
             // 3) 步进电机转到目标牌堆（打印调试信息 + 等待到位）
             snprintf(status, sizeof(status), "rotate deck %u", (unsigned)deck + 1);
             deal_update_screen(status);
-            debug_rotate_to_deck(deck);
+            if (!rotate_to_deck(deck)) {
+                deal_add_error("chassis rotate timeout");
+                deal_fail();
+                break;
+            }
 
             // 4) 下发子板发牌指令
             snprintf(status, sizeof(status), "deal card %u", (unsigned)i + 1);
@@ -587,7 +690,9 @@ void vDealTask(void *pv) {
             }
 
             // 5) 等待本张牌发出（光敏 EVT_CARD_OUT）
-            if (!deal_wait_evt(xSubboardRxQueue, EVT_CARD_OUT, PHOTO_TIMEOUT_MS, NULL)) {
+            if (simOn) { sim.type = EVT_CARD_OUT; sim.len = 0; sim.delayMs = SIM_PHOTO_DELAY_MS; }
+            if (!deal_wait_evt_core(xSubboardRxQueue, EVT_CARD_OUT, PHOTO_TIMEOUT_MS, NULL,
+                                    simOn ? &sim : NULL)) {
                 deal_add_error("card not out");
                 deal_fail();
                 break;

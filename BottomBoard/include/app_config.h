@@ -41,15 +41,17 @@
 
 // ================= 发牌方案（占位：方案 1~4，具体方案待定）=================
 #define SCHEME_COUNT        4
-// 已定义发牌模式的方案：方案四（索引 3）= TEST 测试模式；方案 1~3 未定义，确认后报错等待重置
-#define SCHEME_TEST_INDEX   3
+// 方案三（索引 2）= 底盘连续旋转测试（不发牌）；方案四（索引 3）= TEST 发牌测试；方案 1~2 未定义
+#define SCHEME_ROTATE_TEST_INDEX  2
+#define SCHEME_TEST_INDEX         3
+#define ROTATE_TEST_TOPTURNS      10   // 方案三：顶层连续旋转圈数（电机步数按 33:10 齿轮比换算）
 
 // ================= 发牌模式预设（占位：模式未定，先定共同结构）=================
 #define DECK_COUNT          4     // 牌堆数量（占位）
-#define ROTATE_WAIT_MS      1500  // 步进电机旋转到位等待（ms；实际量产用 INDEX/霍尔到位确认）
+#define ROTATE_WAIT_MS      1500  // 步进电机到位后的稳定等待（ms；备用，实际旋转由 AccelStepper 完成）
 #define DEAL_TOTAL_CARDS    4     // 每局发牌总张数（占位）
 
-// 牌堆位置：步进电机角度（deg，占位值，按实际机械结构调整）
+// 牌堆位置：顶层转盘目标角度（deg；电机实际转角 = ×33/10，见 CHASSIS_GEAR_*）
 static const int16_t kDeckAngles[DECK_COUNT] = { 0, 90, 180, 270 };
 
 // 每张牌的目标牌堆（按发牌顺序；占位：依次从 1→4 号牌堆各发一张）
@@ -58,11 +60,33 @@ static const uint8_t kDealDeckSequence[DEAL_TOTAL_CARDS] = { 0, 1, 2, 3 };
 // ================= 时序 / 超时（ms）=================
 #define ENCODER_DEBOUNCE_MS    5     // 编码器消抖（架构 v2 异常处理 8.1）
 #define PHOTO_TIMEOUT_MS       500   // 光敏超时（与子板协议一致）
-#define CAMERA_TIMEOUT_MS      2000  // 摄像头识别超时（与子板协议一致）
+#define CAMERA_TIMEOUT_MS      1000  // 【临时测试】牌面识别等待 0.5s，超时 1s；恢复 5s 识别时改回 6000
 #define SUB_RESP_TIMEOUT_MS    1000  // 等待子板响应超时
 #define MONITOR_PERIOD_MS      500   // 系统监控巡检周期
 #define COMM_HEARTBEAT_MS      1000  // 子板心跳查询间隔
 #define COMM_DEAD_TIMEOUT_MS   3000  // 子板掉线判定阈值
+
+// ================= 测试模拟（方案四 TEST；摄像头/光敏未就绪）=================
+#define SIM_CAMERA_DELAY_MS    500   // 【临时测试】模拟摄像头识别耗时 0.5s；恢复时改回 5000
+#define SIM_PHOTO_DELAY_MS     300   // 模拟光敏确认：下发发牌指令后多久认为已出牌
+
+// ================= 底盘步进（TMC2209 STEP/DIR/ENN，参考 重要信息/步进电机/main.cpp）=================
+#define CHASSIS_FULL_STEPS_PER_REV  200      // D42HS3418-13B11：1.8°，200 整步/圈
+#define CHASSIS_MICROSTEPS          8        // MS1/MS2 悬空时 1/8 微步
+#define CHASSIS_STEPS_PER_REV       (CHASSIS_FULL_STEPS_PER_REV * CHASSIS_MICROSTEPS)
+#define CHASSIS_GEAR_NUM            33       // 齿轮传动比：电机 33 齿 : 顶层 10 齿
+#define CHASSIS_GEAR_DEN            10
+#define CHASSIS_RPM                 120.0F   // 电机轴转速（rpm）；顶层转速 = CHASSIS_RPM ÷ 3.3
+#define CHASSIS_SETTLE_MS           500      // 使能后稳定等待（ms）
+#define CHASSIS_MOVE_TIMEOUT_MS     60000    // 旋转超时保护基准（ms）；长距离按预计用时自动放宽
+
+// ---- TMC2209 UART 低电流保持（TX 串 1K / RX 直连；MKS TMC2209）----
+#define TMC_UART_BAUD       115200
+#define TMC_RSENSE          0.11F    // MKS TMC2209 采样电阻（仅作库参数参考）
+#define TMC_DRIVER_ADDR     0b00     // MS1/MS2 对应的 UART 从机地址
+#define TMC_RUN_CS          24       // IRUN 电流档（0~31），转动/到位初期电流
+#define TMC_HOLD_CS         20        // IHOLD 电流档（0~31），停转后锁轴保持电流
+#define TMC_IHOLD_DELAY     2        // 停转后延时降为 IHOLD（0~15）
 
 // ================= 子板串口 =================
 // 物理层为滑环 2 线串口（RX/TX），软件按普通 UART 处理；

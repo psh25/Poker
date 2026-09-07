@@ -23,14 +23,14 @@ from machine import LED, Pin
 # ============================== 用户配置 =====================================
 
 # 可选值："rank"、"suit"、"special"。
-TEMPLATE_GROUP = "special"
+TEMPLATE_GROUP = "suit"
 
 # 示例：
 # rank    -> "A"、"2"、...、"10"、"J"、"Q"、"K"
 # suit    -> "heart"、"diamond"、"club"、"spade"
 # special -> 推荐使用 "joker" 或 "back"
 # 为兼容已有文件，也允许 "joker_big" 和 "joker_small"；识别时仍按颜色区分。
-TEMPLATE_LABEL = "back"
+TEMPLATE_LABEL = "heart"
 
 # OpenMV 设备端模板根目录。若需要频繁采集，可改为 "/sdcard/templates"。
 TEMPLATE_ROOT = "/flash/templates"
@@ -38,7 +38,7 @@ TEMPLATE_ROOT = "/flash/templates"
 # 以下 ROI 均为 QVGA（320x240）坐标：(x, y, w, h)。
 # 当前数值只是便于启动的默认值，必须根据实际机械位置调整。
 RANK_ROI = (95, 35, 80, 120)
-SUIT_ROI = (85, 150, 70, 70)
+SUIT_ROI = (95, 140, 70, 70)
 SPECIAL_ROI = (70, 20, 150, 210)
 
 JPEG_REFERENCE_QUALITY = 90

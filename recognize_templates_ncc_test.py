@@ -28,7 +28,7 @@ from machine import LED
 TEMPLATE_ROOT = "/flash/templates"
 
 # 一次只测试一个分组，避免 OpenMV 同时做大量穷举匹配。
-TEST_GROUP = "suit"
+TEST_GROUP = "rank"
 
 # QVGA（320x240）下的搜索区域，应比模板区域略大。
 SEARCH_ROI_BY_GROUP = {

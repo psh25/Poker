@@ -185,7 +185,7 @@ static void sub_debug_print_help(void) {
     Serial.println("[CLI] decks | dealinfo             - 打印牌堆预设 / 发牌进度与错误");
     Serial.println("[CLI] stop | reset                  - 停机回 IDLE / 复位（含子板）");
     Serial.println("[CLI] confirm                       - 确认当前方案（两段式第一步）");
-    Serial.println("[CLI] setstate <idle|dealing|active|end> - 强制切换状态（调试）");
+    Serial.println("[CLI] setstate <idle|dealing|active> - 强制切换状态（调试）");
     Serial.println("[CLI] sub <cmd> [hex data...]      - 底板→子板（自动组帧+CRC）");
     Serial.println("[CLI]      cmd: deal|stop|status|selftest|reset 或 hex，如 sub 0x03");
     Serial.println("[CLI] sim <type> [hex data...]     - 模拟子板→底板事件（喂给协议分发）");
@@ -242,7 +242,7 @@ static void sub_debug_cli_process(const char *line) {
     if (strcmp(line, "help") == 0) { sub_debug_print_help(); return; }
 
     if (strcmp(line, "state") == 0) {
-        static const char *names[] = {"IDLE", "DEALING", "GAME_ACTIVE", "GAME_END"};
+        static const char *names[] = {"IDLE", "DEALING", "GAME_ACTIVE"};
         Serial.printf("[CLI] state = %s (%d)\n", names[state_get_current()], state_get_current());
         return;
     }
@@ -309,7 +309,6 @@ static void sub_debug_cli_process(const char *line) {
         struct { const char *name; system_state_t st; } map[] = {
             {"idle", STATE_IDLE}, {"dealing", STATE_DEALING},
             {"active", STATE_GAME_ACTIVE},
-            {"end", STATE_GAME_END},
         };
         const char *p = line + 9;
         system_state_t st = (system_state_t)0xFF;
@@ -318,10 +317,10 @@ static void sub_debug_cli_process(const char *line) {
         }
         if (st == (system_state_t)0xFF) {
             int n = atoi(p);
-            if (n >= STATE_IDLE && n <= STATE_GAME_END) st = (system_state_t)n;
+            if (n >= STATE_IDLE && n <= STATE_GAME_ACTIVE) st = (system_state_t)n;
         }
         if (st == (system_state_t)0xFF) {
-            Serial.println("[CLI] setstate: idle|dealing|active|end（或 0~3）");
+            Serial.println("[CLI] setstate: idle|dealing|active（或 0~2）");
             return;
         }
         xEventGroupSetBits(xStateEventGroup, BIT_TEST_IDLE << st);  // 测试位连续
@@ -704,10 +703,13 @@ void vDealTask(void *pv) {
 void vEncoderTask(void *pv) {
     // 中(2) | 任意核心
     // 旋转：1ms 轮询 A/B 相做四态正交解码，累计满一整格（4 次有效跳变）才计一步，抗抖动/噪声
-    // 按键：SW 轮询消抖；短按两段式（确认方案 → CONFIRM 发牌）；DEALING 出错/ GAME_END 短按重置；
+    // 按键：SW 轮询消抖；短按两段式（确认方案 → CONFIRM 发牌）；DEALING 出错短按重置；
+    // GAME_ACTIVE 长按确认结束并直接回 IDLE（短按与屏幕主体预留给后续功能）；
     // 旋转只在 IDLE 生效（切换/取消方案），其他状态旋转无反应
     int8_t selection = 0;
     bool press_active = false;
+    uint32_t sw_press_ms = 0;    // 本次按下起始时间（长按判定）
+    bool sw_long_done = false;   // 本次按下是否已触发过长按动作
 
     uint8_t prev_state = 0xFF;   // 上次 A/B 组合状态（A<<1|B）
     int8_t quad_accum = 0;       // 同方向累计有效跳变（满 ±4 = 一格）
@@ -730,14 +732,20 @@ void vEncoderTask(void *pv) {
             if (sw == 0) {
                 // 按下
                 Serial.println("[ENC] SW press");
-                if (s == STATE_IDLE || s == STATE_GAME_END ||
+                sw_press_ms = now_ms;
+                sw_long_done = false;
+                if (s == STATE_IDLE || s == STATE_GAME_ACTIVE ||
                     (s == STATE_DEALING && deal_error_active())) {
                     press_active = true;
                 }
             } else {
-                // 松开：短按处理（第一次=确认方案，第二次=CONFIRM 发牌；DEALING 出错/ GAME_END=重置）
+                // 松开：长按已处理或按住超过长按阈值 → 不触发短按动作
                 if (!press_active) continue;
                 press_active = false;
+                if (sw_long_done ||
+                    (uint32_t)(now_ms - sw_press_ms) >= (uint32_t)ENCODER_LONG_PRESS_MS) {
+                    continue;
+                }
 
                 if (s == STATE_IDLE) {
                     if (!display_get_confirmed()) {
@@ -764,10 +772,17 @@ void vEncoderTask(void *pv) {
                         Serial.println("[ENC] reset from DEALING error");
                         xEventGroupSetBits(xStateEventGroup, BIT_RESET);
                     }
-                } else if (s == STATE_GAME_END) {
-                    xEventGroupSetBits(xStateEventGroup, BIT_RESET);           // GAME_END→IDLE
                 }
             }
+        }
+
+        // 1.5) GAME_ACTIVE 长按：按住 ENCODER_LONG_PRESS_MS 后确认结束并直接回 IDLE
+        if (prev_sw == 0 && !sw_long_done &&
+            state_get_current() == STATE_GAME_ACTIVE &&
+            (uint32_t)(now_ms - sw_press_ms) >= (uint32_t)ENCODER_LONG_PRESS_MS) {
+            sw_long_done = true;
+            Serial.println("[ENC] long press: game end & reset to IDLE");
+            xEventGroupSetBits(xStateEventGroup, BIT_RESET);
         }
 
         // 2) 1ms 轮询 A/B 相正交解码

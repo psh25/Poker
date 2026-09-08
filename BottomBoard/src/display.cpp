@@ -173,6 +173,27 @@ static void draw_dealing(const display_cmd_t *cmd) {
     }
 }
 
+// GAME_ACTIVE 屏：信息放顶部（紧凑），长按提示放底部；
+// 屏幕中部与短按编码器预留给后续功能（如选牌、预览等）。
+static void draw_game_active(const display_cmd_t *cmd) {
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextSize(1);
+
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setCursor(10, 4);
+    tft.print("Game Active");
+
+    if (cmd->payload.game.cardInfo[0]) {          // 有牌面信息时显示第二行
+        tft.setTextColor(TFT_CYAN, TFT_BLACK);
+        tft.setCursor(10, 16);
+        tft.print(cmd->payload.game.cardInfo);
+    }
+
+    tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+    tft.setCursor(10, 150);
+    tft.print("Hold=End,Reset");
+}
+
 void display_handle_command(const display_cmd_t *cmd) {
     switch (cmd->type) {
     case DISPLAY_CMD_IDLE:
@@ -187,19 +208,7 @@ void display_handle_command(const display_cmd_t *cmd) {
         break;
 
     case DISPLAY_CMD_GAME_ACTIVE:
-        tft.fillScreen(TFT_BLACK);
-        tft.setTextColor(TFT_WHITE, TFT_BLACK);
-        tft.setTextSize(1);
-        tft.setCursor(10, 70);
-        tft.print("Game Active");
-        break;
-
-    case DISPLAY_CMD_GAME_END:
-        tft.fillScreen(TFT_BLACK);
-        tft.setTextColor(TFT_WHITE, TFT_BLACK);
-        tft.setTextSize(1);
-        tft.setCursor(10, 70);
-        tft.print("Game End");
+        draw_game_active(cmd);
         break;
 
     case DISPLAY_CMD_CARD_PREVIEW:

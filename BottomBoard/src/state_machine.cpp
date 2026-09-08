@@ -51,7 +51,6 @@ void state_transition_to(system_state_t next) {
         // 发牌界面由发牌任务负责刷新，避免“开始”屏覆盖发牌错误信息
         break;
     case STATE_GAME_ACTIVE: cmd.type = DISPLAY_CMD_GAME_ACTIVE; break;
-    case STATE_GAME_END:  cmd.type = DISPLAY_CMD_GAME_END;    break;
     default: break;
     }
     if (cmd.type != (display_cmd_type_t)0xFF) send_display_command(&cmd);
@@ -67,8 +66,8 @@ void vStateManagerTask(void *pv) {
         EventBits_t bits = xEventGroupWaitBits(
             xStateEventGroup,
             BIT_DEAL_COMPLETE | BIT_DEAL_ERROR | BIT_CONFIRM_RECEIVED |
-            BIT_GAME_END | BIT_RESET | BIT_DEAL_CONFIRM |
-            BIT_TEST_IDLE | BIT_TEST_DEALING | BIT_TEST_ACTIVE | BIT_TEST_END,
+            BIT_RESET | BIT_DEAL_CONFIRM |
+            BIT_TEST_IDLE | BIT_TEST_DEALING | BIT_TEST_ACTIVE,
             pdTRUE,        // 清除位
             pdFALSE,       // 任一满足即可
             portMAX_DELAY);
@@ -78,7 +77,6 @@ void vStateManagerTask(void *pv) {
         if (bits & BIT_TEST_IDLE)        { state_transition_to(STATE_IDLE);        cur = STATE_IDLE;        continue; }
         if (bits & BIT_TEST_DEALING)     { state_transition_to(STATE_DEALING);     cur = STATE_DEALING;     continue; }
         if (bits & BIT_TEST_ACTIVE)      { state_transition_to(STATE_GAME_ACTIVE); cur = STATE_GAME_ACTIVE; continue; }
-        if (bits & BIT_TEST_END)         { state_transition_to(STATE_GAME_END);    cur = STATE_GAME_END;    continue; }
 
         // 转移逻辑对应架构 v2 5.3 转移条件表
         switch (cur) {
@@ -95,9 +93,7 @@ void vStateManagerTask(void *pv) {
             else if (bits & BIT_DEAL_COMPLETE) { state_transition_to(STATE_GAME_ACTIVE); cur = STATE_GAME_ACTIVE; }
             break;
         case STATE_GAME_ACTIVE:
-            if (bits & BIT_GAME_END)         { state_transition_to(STATE_GAME_END); cur = STATE_GAME_END; }
-            break;
-        case STATE_GAME_END:
+            // 长按编码器（或主机 CMD_STOP/CMD_RESET）→ 确认结束并直接回 IDLE
             if (bits & BIT_RESET)            { state_transition_to(STATE_IDLE); cur = STATE_IDLE; }
             break;
         default:

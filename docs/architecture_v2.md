@@ -22,6 +22,8 @@ v2.1（2026-08-30）修订：
 
 v2.2（2026-09-08）修订：以最新版两板 `include/pins_config.h` 为准更新 IO 映射与接线（滑环 POS/NEG 新定义）；底座步进回归参考程序 STEP/DIR/ENN（不再使用 TMC 单线 UART 电流控制，DIAG/INDEX/STDBY 相关设计移除）；子板调试 RGB LED 已随新硬件配置移除。
 
+v2.3（2026-09-08）修订：删除冗余的 GAME_END 状态（原状态无生产者，不可达）；GAME_ACTIVE 改为编码器长按确认结束并直接回 IDLE，主机 `CMD_RESET`/`CMD_STOP` 同样生效；GAME_ACTIVE 屏改为顶部状态信息 + 底部操作提示，中部与短按编码器预留给后续功能。
+
 与 v1 的逐项差异见 [architecture_v2_diff.md](architecture_v2_diff.md)；子板详细设计见 [subboard_architecture.md](subboard_architecture.md)。
 
 ---
@@ -152,7 +154,7 @@ v2.2（2026-09-08）修订：以最新版两板 `include/pins_config.h` 为准�
 | 发牌控制任务 | 同步触发 | `xDealSemaphore` | CONFIRM 最终确认后由编码器任务 Give | 用户确认操作 |
 | 子板通信任务 | 串口中断 + 队列 | 接收队列 + 发送队列 | 子板上报事件，或底板下发指令 | 子板硬件事件 / 发牌任务请求 |
 | 蓝牙通信任务 | 队列阻塞 | 接收/发送队列 | 小程序指令到达，或状态管理任务有数据待发 | 小程序操作 / 系统状态上报 |
-| 状态管理任务 | 事件组 | `xStateEventGroup` | 发牌完成、选牌完成、牌局结束等 | 其他任务执行完毕 |
+| 状态管理任务 | 事件组 | `xStateEventGroup` | 发牌完成、结束/重置回 IDLE 等 | 其他任务执行完毕 |
 | 屏幕显示任务 | 队列触发 | `xDisplayQueue` | 任何需要屏幕更新的事件发生 | 所有其他任务均可触发 |
 | 系统监控任务 | 定时器周期 | 软件定时器 | 周期巡检电机状态 / 通讯心跳 / 告警 | 定时器 |
 
@@ -202,20 +204,19 @@ v2.2（2026-09-08）修订：以最新版两板 `include/pins_config.h` 为准�
 
 | 事件组 | 用途 |
 |--------|------|
-| `xStateEventGroup` | 通知各任务系统状态变化（发牌完成、牌局结束、重置等），支持“多条件同时满足”等待 |
+| `xStateEventGroup` | 通知各任务系统状态变化（发牌完成、结束/重置等），支持“多条件同时满足”等待 |
 
 ---
 
 ## 五、状态机设计
 
-### 5.1 状态定义（2026-08 修订：删除 SELECTING，选方案并入 IDLE）
+### 5.1 状态定义（2026-08 删除 SELECTING；2026-09 删除 GAME_END）
 
 | 状态 | 含义 | 可执行操作 |
 |------|------|------------|
 | IDLE | 待命 / 选方案状态 | 旋转切换方案（旋转即取消已确认）；短按确认方案（顶部显示已选）；再次短按 CONFIRM 进入发牌 |
 | DEALING | 发牌中 | 底座旋转、子板发牌、光敏检测、摄像头识别 |
-| GAME_ACTIVE | 牌局进行中 | 小程序选牌、底板屏幕显示、记录操作（不使用编码器/发牌电机/光敏/摄像头） |
-| GAME_END | 牌局结束 | 显示结果，编码器重置回到 IDLE |
+| GAME_ACTIVE | 牌局进行中 | 屏幕顶部显示状态、底部长按提示；长按编码器确认结束并直接回 IDLE；短按与屏幕中部预留给后续功能 |
 
 ### 5.2 状态转移图
 
@@ -225,9 +226,8 @@ stateDiagram-v2
     IDLE --> DEALING : 确认方案后再次短按（CONFIRM 最终确认）
     DEALING --> GAME_ACTIVE : 所有牌堆发完且计数无误
     DEALING --> IDLE : 发牌异常/中断（等待重置）
-    GAME_ACTIVE --> GAME_END : 牌局结束
+    GAME_ACTIVE --> IDLE : 编码器长按 / 主机 reset（确认结束）
     GAME_ACTIVE --> DEALING : 需要补发牌（特殊流程，预留）
-    GAME_END --> IDLE : 编码器按下重置
 ```
 
 ### 5.3 状态转移条件详细说明
@@ -237,8 +237,7 @@ stateDiagram-v2
 | IDLE → DEALING | 已确认方案后再次按下（CONFIRM 最终确认） | ① 锁存方案参数 ② 启动发牌任务 ③ 更新屏幕为“发牌中” |
 | DEALING → GAME_ACTIVE | 所有牌堆发完且光敏计数无误 | ① 上传牌堆信息到小程序 ② 屏幕显示“等待选牌” |
 | DEALING → IDLE | 发牌异常（漏发/多发/卡牌） | ① 显示错误信息 ② 等待编码器重置 |
-| GAME_ACTIVE → GAME_END | 所有牌被选完/牌局结束 | ① 屏幕显示结果 ② 等待重置 |
-| GAME_END → IDLE | 编码器按下 | ① 清空牌堆数据 ② 复位所有状态 ③ 重置屏幕 |
+| GAME_ACTIVE → IDLE | 编码器长按确认结束（或主机 `CMD_RESET`/`CMD_STOP`） | ① 复位状态与屏幕（已确认选择清空）② 牌局数据在下一局开始时清空 |
 | GAME_ACTIVE → DEALING | 需要补发牌（特殊流程） | 预留，待方案细化后启用 |
 
 ---
@@ -385,7 +384,6 @@ typedef enum {
     DISPLAY_CMD_SELECT,         // 高亮某个方案（含是否已确认）
     DISPLAY_CMD_DEALING,        // 发牌中（进度）
     DISPLAY_CMD_GAME_ACTIVE,    // 牌局进行中（牌面信息）
-    DISPLAY_CMD_GAME_END,       // 牌局结束（结果）
     DISPLAY_CMD_CARD_PREVIEW,   // 小程序选牌后预览
     DISPLAY_CMD_ERROR,          // 错误信息
     DISPLAY_CMD_DEBUG           // 调试提示（如“已确认/已取消”）
@@ -396,6 +394,7 @@ typedef enum {
 - 系统启动时由 `setup()` 末尾主动发送一次 `DISPLAY_CMD_IDLE`，避免屏幕空白。
 - `drawXXX()` 内禁止 `delay()` 等阻塞调用（唯一例外：`DISPLAY_CMD_DEBUG` 调试提示允许短暂阻塞 700ms 便于观察）。
 - IDLE 屏为两段式：顶部 `Selected: N`（未确认时 `Selected: -`），CONFIRM 按钮在确认方案后由灰变绿。
+- GAME_ACTIVE 屏：状态信息置顶（尽量紧凑），底部显示 `Hold=End,Reset` 长按提示；屏幕中部与短按编码器留给后续功能。
 
 ## 附录 B：编码器事件结构（示例）
 

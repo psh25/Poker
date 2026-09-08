@@ -5,9 +5,11 @@
 
 > ⚠️ 2026-09-08 修订：本文“硬件落地”部分写于 v2.1；自 v2.2 起，底座步进回归参考程序 **STEP/DIR/ENN**（移除 TMC 单线 UART / DIAG / INDEX / STDBY），滑环串口引脚改为 **POS/NEG**，子板调试 RGB LED 已移除。当前引脚与实现以 `architecture_v2.md` 1.3/8.2 及两板 `include/pins_config.h` 为准，下文硬件条目请结合该修订阅读。
 
+> 2026-09-08 v2.3：状态机由 4 状态改为 **3 状态（IDLE / DEALING / GAME_ACTIVE）**，删除冗余的 GAME_END；GAME_ACTIVE 长按编码器（或主机 `CMD_RESET`/`CMD_STOP`）确认结束并直接回 IDLE。
+
 ## 一、总原则
 
-v2 **不推翻 v1 的主体设计**，保留：4 状态状态机（IDLE / DEALING / GAME_ACTIVE / GAME_END）、底板 RTOS 任务集合主体、队列/信号量/互斥量/事件组四类 ITC、异常处理框架、启动顺序框架。
+v2 **不推翻 v1 的主体设计**，保留：3 状态状态机（IDLE / DEALING / GAME_ACTIVE，v2.3 起）、底板 RTOS 任务集合主体、队列/信号量/互斥量/事件组四类 ITC、异常处理框架、启动顺序框架。
 
 > 2026-08 修订：删除 SELECTING，选方案并入 IDLE：旋转切换方案（旋转即取消已确认）→ 短按确认方案 → 再次短按（CONFIRM）发牌。
 
@@ -20,7 +22,7 @@ v2 **不推翻 v1 的主体设计**，保留：4 状态状态机（IDLE / DEALIN
 
 | 模块 | v2 的处理 |
 |------|-----------|
-| 状态机（4 状态 + 转移条件） | 删除 SELECTING，选方案并入 IDLE（两段式确认）；保留 GAME_ACTIVE → DEALING“补发牌”预留分支 |
+| 状态机（3 状态 + 转移条件） | v2.1 删除 SELECTING，选方案并入 IDLE（两段式确认）；v2.3 删除 GAME_END，GAME_ACTIVE 长按编码器结束并回 IDLE；保留 GAME_ACTIVE → DEALING“补发牌”预留分支 |
 | 任务列表主体 | 蓝牙、编码器、子板通信、发牌控制、屏幕显示、状态管理六任务保留，职责基本不变 |
 | 队列/互斥量/事件组 | 名称与保护对象不变；`xDisplayQueue` 容量按对话结论由 10 调整为 5 |
 | 信号量 | 三个信号量保留，触发源从“底板直连硬件中断”调整为“子板协议事件解析后 Give” |

@@ -22,7 +22,7 @@ DealerMachine/
 |------|--------|------|
 | 底座转盘步进电机 | 底板 | TMC2209 驱动（STEP/DIR/ENN，电流由驱动板 VREF 电位器设定；不再使用单线 UART） |
 | 屏幕 + SD 卡 | 底板 | ST7735 128×160（1.8"，当前测试板），与 SD 共用 SPI 总线（独立片选） |
-| 旋转编码器 | 底板 | EC11，A/B 相 + 按键，选择方案 / 确认方案 / CONFIRM 发牌 / 重置 |
+| 旋转编码器 | 底板 | EC11：旋转选择/取消方案、短按确认方案/CONFIRM 发牌、GAME_ACTIVE 长按结束回 IDLE |
 | 霍尔零点传感器 | 底板 | A3144，两段式上电归零、运行中失步校准 |
 | 蓝牙 | 底板 | ESP32-S3 内置 BLE，与小程序通信 |
 | 发牌电机 | 子板 | 6V 直流电机，由子板控制 |
@@ -42,7 +42,7 @@ DealerMachine/
 - **通信原则**：子板 → 底板逐张实时上报（光敏/识别/异常），底板 → 小程序整局统一上传。
 - **板间协议**：`0xA5 | type | len | data | crc8 | 0xAA`，掉线超时保护（详见 [board_protocol.md](docs/board_protocol.md)）。
 - **命令/事件命名**：命令统一 `CMD_*`，事件统一 `EVT_*`（错误事件为 `EVT_ERROR_*`）；CLI 别名 = 枚举名去前缀的小写（`status`、`dealdone`、`motorstall`）。
-- **状态机**：`IDLE → DEALING → GAME_ACTIVE → GAME_END → IDLE`（选方案并入 IDLE：旋转切换/取消、短按确认方案、再按 CONFIRM 发牌），仅状态管理任务负责切换（单写者）。
+- **状态机**：`IDLE → DEALING → GAME_ACTIVE`（选方案并入 IDLE：旋转切换/取消、短按确认方案、再按 CONFIRM 发牌；GAME_ACTIVE 长按编码器确认结束并直接回 IDLE），仅状态管理任务负责切换（单写者）。
 - **屏幕显示**：事件驱动（队列触发），非轮询，只展示不决策。
 
 ### 底板任务与优先级

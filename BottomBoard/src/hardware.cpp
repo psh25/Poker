@@ -205,7 +205,7 @@ void busy_state_enter(uint8_t state) {
 }
 
 void busy_state_exit(uint8_t state) {
-    // TODO: 状态退出动作（例如 GAME_END：清空牌堆数据、复位所有状态）
+    // TODO: 状态退出动作（例如 GAME_ACTIVE→IDLE：清空牌局数据、复位所有状态）
     (void)state;
 }
 

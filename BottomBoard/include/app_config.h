@@ -59,6 +59,7 @@ static const uint8_t kDealDeckSequence[DEAL_TOTAL_CARDS] = { 0, 1, 2, 3 };
 
 // ================= 时序 / 超时（ms）=================
 #define ENCODER_DEBOUNCE_MS    5     // 编码器消抖（架构 v2 异常处理 8.1）
+#define ENCODER_LONG_PRESS_MS  2000  // 长按判定（GAME_ACTIVE：确认结束并回 IDLE）
 #define PHOTO_TIMEOUT_MS       500   // 光敏超时（与子板协议一致）
 #define CAMERA_TIMEOUT_MS      1000  // 【临时测试】牌面识别等待 0.5s，超时 1s；恢复 5s 识别时改回 6000
 #define SUB_RESP_TIMEOUT_MS    1000  // 等待子板响应超时

@@ -42,15 +42,13 @@ extern EventGroupHandle_t xStateEventGroup;
 #define BIT_DEAL_COMPLETE      (1 << 0)  // 发牌完成
 #define BIT_DEAL_ERROR         (1 << 1)  // 发牌异常
 #define BIT_CONFIRM_RECEIVED   (1 << 2)  // 小程序确认收到牌堆信息
-#define BIT_GAME_END           (1 << 3)  // 牌局结束
-#define BIT_RESET              (1 << 4)  // 重置
-#define BIT_STATE_CHANGED      (1 << 5)  // 状态已切换（广播）
-#define BIT_DEAL_CONFIRM       (1 << 6)  // IDLE 下按下确认 → DEALING
+#define BIT_RESET              (1 << 3)  // 重置 / 结束回 IDLE（GAME_ACTIVE 长按等）
+#define BIT_STATE_CHANGED      (1 << 4)  // 状态已切换（广播）
+#define BIT_DEAL_CONFIRM       (1 << 5)  // IDLE 下按下确认 → DEALING
 
 // CLI 调试：强制切换到指定状态（测试各状态显示/功能）
-#define BIT_TEST_IDLE          (1 << 7)
-#define BIT_TEST_DEALING       (1 << 8)
-#define BIT_TEST_ACTIVE        (1 << 9)
-#define BIT_TEST_END           (1 << 10)
+#define BIT_TEST_IDLE          (1 << 6)
+#define BIT_TEST_DEALING       (1 << 7)
+#define BIT_TEST_ACTIVE        (1 << 8)
 
 void create_itc(void);

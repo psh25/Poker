@@ -15,40 +15,6 @@
 #define MOTOR_PWM_FREQ    20000
 #define MOTOR_PWM_BITS    8
 
-// ---- RGB LED debug indicator (common cathode: '-' -> GND) ----
-static uint8_t s_led_r = 0, s_led_g = 0, s_led_b = 0;
-static uint32_t s_led_until = 0;
-
-static void led_set(uint8_t r, uint8_t g, uint8_t b, uint32_t ms) {
-    s_led_r = r; s_led_g = g; s_led_b = b;
-    s_led_until = millis() + ms;
-    sub_led_rgb(r, g, b);
-}
-
-void sub_led_rgb(bool red, bool green, bool blue) {
-    digitalWrite(PIN_LED_R, red   ? HIGH : LOW);
-    digitalWrite(PIN_LED_G, green ? HIGH : LOW);
-    digitalWrite(PIN_LED_B, blue  ? HIGH : LOW);
-}
-
-void sub_led_flash_rx_byte(void) { led_set(1, 0, 0, 150); }   // red 150ms
-void sub_led_flash_frame_ok(void) { led_set(0, 1, 0, 800); }  // green 800ms
-void sub_led_flash_ack_tx(void)   { led_set(0, 0, 1, 300); }  // blue 300ms
-
-void sub_led_tick(void) {
-    if (s_led_until && (int32_t)(millis() - s_led_until) >= 0) {
-        s_led_until = 0;
-        sub_led_rgb(0, 0, 0);
-    }
-}
-
-void sub_led_init(void) {
-    pinMode(PIN_LED_R, OUTPUT);
-    pinMode(PIN_LED_G, OUTPUT);
-    pinMode(PIN_LED_B, OUTPUT);
-    sub_led_rgb(0, 0, 0);
-}
-
 // ---- 串口接收环形缓冲（架构第四章：中断写入，主循环解析）----
 static volatile uint8_t s_rx_ring[UART_RX_RING_SIZE];
 static volatile uint16_t s_rx_head = 0;   // 写入位置
@@ -106,21 +72,12 @@ void sub_hardware_init(void) {
     ledcSetup(MOTOR_PWM_CH, MOTOR_PWM_FREQ, MOTOR_PWM_BITS);
     ledcAttachPin(PIN_MOTOR_PWM, MOTOR_PWM_CH);
     ledcWrite(MOTOR_PWM_CH, 0);
-    pinMode(PIN_MOTOR_CURRENT, INPUT);    // TODO: 电流检测 ADC（堵转检测）
 
     // 光敏
     pinMode(PIN_PHOTO, INPUT_PULLUP);     // TODO: 按传感器电平配置
 
-    // 摄像头（占位）
-    pinMode(PIN_CAM_SCK, OUTPUT);
-    pinMode(PIN_CAM_MOSI, OUTPUT);
-    pinMode(PIN_CAM_MISO, INPUT);
-    pinMode(PIN_CAM_CS, OUTPUT);
-    digitalWrite(PIN_CAM_CS, HIGH);
-    pinMode(PIN_CAM_RDY, INPUT);
-
-    // 指示灯
-    sub_led_init();   // RGB LED (common cathode: R=15 G=16 B=8)
+    // 摄像头（占位）：新配置按 UART 预留（PIN_CAM_TX/RX/TRIG），
+    // 摄像头模组就绪后再初始化对应串口；当前不占用这些引脚。
 
     // 与底板通信串口（2 线 UART）
     Serial1.begin(SUB_UART_BAUD, SERIAL_8N1, SUB_UART_RX_PIN, SUB_UART_TX_PIN);
@@ -132,9 +89,9 @@ void sub_hardware_init(void) {
     dbg_println("[SUB] ---- pin config ----");
     dbg_printf("[SUB] motor: PWMA=%d AIN1=%d AIN2=%d STBY=%d\n",
                   PIN_MOTOR_PWM, PIN_MOTOR_AIN1, PIN_MOTOR_AIN2, PIN_MOTOR_STBY);
-    dbg_printf("[SUB] uart : RX=%d TX=%d\n", PIN_UART_RX, PIN_UART_TX);
-    dbg_printf("[SUB] photo: %d | LED: R=%d G=%d B=%d\n",
-                  PIN_PHOTO, PIN_LED_R, PIN_LED_G, PIN_LED_B);
+    dbg_printf("[SUB] uart : RX=%d TX=%d (POS=%d NEG=%d)\n",
+                  SUB_UART_RX_PIN, SUB_UART_TX_PIN, PIN_UART_POS, PIN_UART_NEG);
+    dbg_printf("[SUB] photo: %d\n", PIN_PHOTO);
 }
 
 void sub_self_test(void) {
@@ -200,7 +157,7 @@ void busy_status_query(void) {
 }
 
 void busy_error_handle(uint8_t errorType) {
-    // TODO: 本地错误处理（如 LED 快闪）
+    // TODO: 本地错误处理（上报底板 / 屏幕显示）
     (void)errorType;
 }
 

@@ -70,27 +70,20 @@ static const uint8_t kDealDeckSequence[DEAL_TOTAL_CARDS] = { 0, 1, 2, 3 };
 #define SIM_CAMERA_DELAY_MS    500   // 【临时测试】模拟摄像头识别耗时 0.5s；恢复时改回 5000
 #define SIM_PHOTO_DELAY_MS     300   // 模拟光敏确认：下发发牌指令后多久认为已出牌
 
-// ================= 底盘步进（TMC2209 STEP/DIR/ENN，参考 重要信息/步进电机/main.cpp）=================
+// ================= 底盘步进（TMC2209 STEP/DIR/ENN，电流由驱动板 VREF 电位器设定；参考 重要信息/步进电机/main.cpp）=================
 #define CHASSIS_FULL_STEPS_PER_REV  200      // D42HS3418-13B11：1.8°，200 整步/圈
 #define CHASSIS_MICROSTEPS          8        // MS1/MS2 悬空时 1/8 微步
 #define CHASSIS_STEPS_PER_REV       (CHASSIS_FULL_STEPS_PER_REV * CHASSIS_MICROSTEPS)
 #define CHASSIS_GEAR_NUM            33       // 齿轮传动比：电机 33 齿 : 顶层 10 齿
 #define CHASSIS_GEAR_DEN            10
-#define CHASSIS_RPM                 120.0F   // 电机轴转速（rpm）；顶层转速 = CHASSIS_RPM ÷ 3.3
+#define CHASSIS_RPM                 180.0F   // 电机轴转速（rpm）；顶层转速 = CHASSIS_RPM ÷ 3.3
+#define CHASSIS_ACCEL_STEPS_PER_S2  80000.0F // 梯形加减速（step/s²）,越小启停越柔和
 #define CHASSIS_SETTLE_MS           500      // 使能后稳定等待（ms）
 #define CHASSIS_MOVE_TIMEOUT_MS     60000    // 旋转超时保护基准（ms）；长距离按预计用时自动放宽
-
-// ---- TMC2209 UART 低电流保持（TX 串 1K / RX 直连；MKS TMC2209）----
-#define TMC_UART_BAUD       115200
-#define TMC_RSENSE          0.11F    // MKS TMC2209 采样电阻（仅作库参数参考）
-#define TMC_DRIVER_ADDR     0b00     // MS1/MS2 对应的 UART 从机地址
-#define TMC_RUN_CS          24       // IRUN 电流档（0~31），转动/到位初期电流
-#define TMC_HOLD_CS         20        // IHOLD 电流档（0~31），停转后锁轴保持电流
-#define TMC_IHOLD_DELAY     2        // 停转后延时降为 IHOLD（0~15）
 
 // ================= 子板串口 =================
 // 物理层为滑环 2 线串口（RX/TX），软件按普通 UART 处理；
 // 若板上有差分收发器，对本层透明。
 #define SUB_UART_BAUD        115200
-#define SUB_UART_RX_PIN      PIN_RING_UART_RX
-#define SUB_UART_TX_PIN      PIN_RING_UART_TX
+#define SUB_UART_RX_PIN      PIN_RING_UART_NEG   // 物理 RX：NEG=48（子板 NEG=TX39 送来）
+#define SUB_UART_TX_PIN      PIN_RING_UART_POS   // 物理 TX：POS=45（子板 POS=RX38 接收）

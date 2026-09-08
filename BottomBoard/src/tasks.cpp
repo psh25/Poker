@@ -181,8 +181,6 @@ static void host_handle_frame(const proto_frame_t *frame) {
 static void sub_debug_print_help(void) {
     Serial.println("[CLI] help                         - 本帮助");
     Serial.println("[CLI] state                        - 打印当前状态机状态");
-    Serial.println("[CLI] tmc                          - 显示 TMC UART 状态与电流档");
-    Serial.println("[CLI] tmc hold <0-31>              - 运行时调整停转保持电流档 IHOLD");
     Serial.println("[CLI] deal                         - 启动发牌（模拟 IDLE 确认，配合 sim）");
     Serial.println("[CLI] decks | dealinfo             - 打印牌堆预设 / 发牌进度与错误");
     Serial.println("[CLI] stop | reset                  - 停机回 IDLE / 复位（含子板）");
@@ -246,27 +244,6 @@ static void sub_debug_cli_process(const char *line) {
     if (strcmp(line, "state") == 0) {
         static const char *names[] = {"IDLE", "DEALING", "GAME_ACTIVE", "GAME_END"};
         Serial.printf("[CLI] state = %s (%d)\n", names[state_get_current()], state_get_current());
-        return;
-    }
-
-    // tmc / tmc hold <n>：诊断 TMC2209 UART 与保持电流（无需重新编译即可调参）
-    if (strcmp(line, "tmc") == 0) {
-        Serial.printf("[CLI] TMC UART=%s RUN_CS=%u HOLD_CS=%u\n",
-                      tmc_uart_ready() ? "OK" : "FAIL",
-                      (unsigned)TMC_RUN_CS, (unsigned)TMC_HOLD_CS);
-        return;
-    }
-    if (strncmp(line, "tmc hold ", 9) == 0) {
-        int v = atoi(line + 9);
-        if (v < 0 || v > 31) {
-            Serial.println("[CLI] tmc hold: 范围 0~31");
-            return;
-        }
-        if (tmc_set_hold_current((uint8_t)v)) {
-            Serial.printf("[CLI] IHOLD -> %d\n", v);
-        } else {
-            Serial.println("[CLI] tmc hold: UART 未就绪（先检查接线，见开机 [TMC] 信息）");
-        }
         return;
     }
 

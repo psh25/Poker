@@ -5,9 +5,9 @@
  * 启动顺序（架构 v2 第九章）：
  *   1. 硬件初始化（GPIO / UART / SPI）
  *   2. 创建内核对象（队列 / 信号量 / 互斥量 / 事件组）
- *   3. TMC2209 单线 UART 初始化（I_scale_analog=0、StallGuard）
+ *   3. 底盘步进初始化（AccelStepper，参考程序同款控制，无 UART 电流配置）
  *   4. 霍尔两段式自动归零
- *   5. 外设自检（霍尔 / 编码器 / SD / TMC / 滑环串口）
+ *   5. 外设自检（霍尔 / 编码器 / SD / 电机驱动 / 滑环串口）
  *   6. 创建任务（按优先级从低到高）
  *   7. 发送初始菜单，进入 IDLE
  */
@@ -31,7 +31,7 @@ void setup() {
     create_itc();                      // 2
     ble_init();                        // 2.1 BLE(NUS)：收小程序命令帧 / 发状态帧
     init_interrupts();                 // 2.5 中断挂接（依赖内核对象）
-    tmc2209_init();                    // 3
+    tmc2209_init();                    // 3：底盘步进初始化（函数名沿用早期版本）
     hall_homing();                     // 4
     self_test();                       // 5
     create_all_tasks();                // 6

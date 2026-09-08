@@ -45,10 +45,8 @@ typedef enum { RX_IDLE, RX_TYPE, RX_LEN, RX_DATA, RX_CRC, RX_TAIL } rx_state_t;
 static rx_state_t s_rx = RX_IDLE;
 static proto_frame_t s_frame;
 static uint8_t s_idx = 0;
-static bool s_uart_frame = false;  // frame came from Serial1 (bottom board), not CLI injection
 
 void proto_rx_byte(uint8_t b) {
-    sub_led_flash_rx_byte();  // any byte on Serial1 -> red LED flash
     switch (s_rx) {
     case RX_IDLE:
         if (b == PROTO_HEADER) s_rx = RX_TYPE;
@@ -74,8 +72,6 @@ void proto_rx_byte(uint8_t b) {
     }
     case RX_TAIL:
         if (b == PROTO_TAIL) {
-            s_uart_frame = true;
-            sub_led_flash_frame_ok();  // complete frame + CRC OK -> green LED flash
             proto_on_command(&s_frame);
         }
         s_rx = RX_IDLE;
@@ -88,9 +84,6 @@ void proto_rx_byte(uint8_t b) {
 
 // 完整命令分发 → 子板状态机
 void proto_on_command(const proto_frame_t *frame) {
-    bool fromUart = s_uart_frame;
-    s_uart_frame = false;
-
     // 防护：子板只应收到命令（0x01~0x7F）；事件/回执（0x80+，如 EVT_ACK=0x88）
     // 异常回环时直接忽略、不回 ACK，避免“ACK 套 ACK”自激循环
     if (frame->type == 0x00 || frame->type >= 0x80) {
@@ -114,7 +107,6 @@ void proto_on_command(const proto_frame_t *frame) {
 
     if (proto_send(EVT_ACK, ack, ackLen)) {
         dbg_printf("[SUB] TX: ACK cmd=0x%02X len=%u\n", frame->type, ackLen);
-        if (fromUart) sub_led_flash_ack_tx();  // ACK written -> blue LED flash
     } else {
         dbg_println("[SUB] TX: ACK send FAILED");
     }

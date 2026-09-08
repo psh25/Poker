@@ -36,8 +36,8 @@
 
 // ===== 串口（与底板通信）=====
 #define SUB_UART_BAUD 115200
-#define SUB_UART_RX_PIN PIN_UART_RX
-#define SUB_UART_TX_PIN PIN_UART_TX
+#define SUB_UART_RX_PIN PIN_UART_POS   // 物理 RX：POS=38（底板 POS=TX45 送来）
+#define SUB_UART_TX_PIN PIN_UART_NEG   // 物理 TX：NEG=39（底板 NEG=RX48 接收）
 
 // ===== 串口接收环形缓冲 =====
 #define UART_RX_RING_SIZE 128

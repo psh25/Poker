@@ -3,14 +3,6 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-// ---- RGB LED debug indicator (common cathode: '-' -> GND) ----
-void sub_led_init(void);
-void sub_led_rgb(bool red, bool green, bool blue);
-void sub_led_flash_rx_byte(void);   // red  : any byte received on Serial1
-void sub_led_flash_frame_ok(void);  // green: complete valid frame parsed
-void sub_led_flash_ack_tx(void);    // blue : ACK written to Serial1
-void sub_led_tick(void);            // call in main loop; turns LED off after timeout
-
 /**
  * 子板硬件层：初始化、中断、环形缓冲、电机/摄像头/光敏驱动。
  * 发牌电机为 TB6612FNG（PWM + AIN1/AIN2 + STBY），见 pins_config.h。

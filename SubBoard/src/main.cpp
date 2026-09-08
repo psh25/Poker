@@ -157,7 +157,6 @@ void loop() {
     while (sub_uart_read_byte(&b)) {
         proto_rx_byte(b);
     }
-    sub_led_tick();  // LED flash timeout
 
     // 2) 调试：USB CDC + CH340 双路读入命令行（模拟底板发来）
     while (Serial.available() > 0)  cli_feed_byte((char)Serial.read());

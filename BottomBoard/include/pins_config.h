@@ -1,40 +1,42 @@
 #pragma once
 
 /**
- * 底板 ESP32-S3 IO 映射
- * 来源：docs/architecture_v2.md 1.3（转写自《底板软件开发交接指南》）
- * ⚠️ 使用前必须与底板原理图逐项核对（交接指南已声明可能存在错误）。
+ * 底板 IO 映射 —— 新主控：经典 ESP32 (ESP32 Dev Module / esp32dev)
+ * 2026-09-09 由 ESP32-S3 迁移。经典 ESP32 限制：
+ *   - GPIO6~11 接内部 Flash，不可用
+ *   - GPIO34~39 仅输入且无内部上拉（编码器/霍尔不要用）
+ *   - GPIO1/3 为 UART0（串口调试），不占用
+ * ⚠️ 以下为“建议分配”，接线时请与底板原理图核对；SD/EXT 暂不接线。
  */
 
-// ---- TMC2209 步进驱动（底座转盘）----
-#define PIN_TMC_STEP   17   // 步进脉冲
-#define PIN_TMC_DIR    16   // 方向
-#define PIN_TMC_ENN    20   // 使能（高=断电，低=工作）
-#define PIN_TMC_TX     8    // 单线 UART 发送（串 1K 电阻接 PDN_UART）
-#define PIN_TMC_RX     19   // 单线 UART 接收（不串电阻，直连 PDN_UART）
+// ---- TMC2209 步进驱动（底座转盘；电流由驱动板 VREF 设定，当前固件不用单线 UART）----
+#define PIN_TMC_STEP   16   // 步进脉冲
+#define PIN_TMC_DIR    17   // 方向
+#define PIN_TMC_ENN    26   // 使能（高=断电，低=工作）
+#define PIN_TMC_TX     27   // 【预留】单线 UART 发送（当前固件未用）
+#define PIN_TMC_RX     14   // 【预留】单线 UART 接收（当前固件未用）
 
 // ---- A3144 霍尔零点传感器 ----
-#define PIN_HALL       7   // 必须 INPUT_PULLUP
+#define PIN_HALL       13   // 必须 INPUT_PULLUP
 
 // ---- EC11 旋转编码器 ----
-#define PIN_ENC_A      37  // A 相（正交）
-#define PIN_ENC_B      36  // B 相（正交）
-#define PIN_ENC_SW     35  // 按键（按下为低电平）
+#define PIN_ENC_A      25   // A 相（CLK）
+#define PIN_ENC_B      33   // B 相（DT）
+#define PIN_ENC_SW     32   // 按键（按下为低电平）
 
 // ---- SPI 总线（屏幕 + SD 共用 SCK/MOSI，独立片选）----
-#define PIN_SPI_SCK    40
-#define PIN_SPI_MOSI   39
-#define PIN_TFT_DC     41
-#define PIN_TFT_RESET  42
-#define PIN_TFT_CS     2
-#define PIN_SD_CS      38
-#define PIN_SD_MISO    1
-
-// ---- 滑环预留外部 IO（拓展备用）----
-#define PIN_EXT1       47
-#define PIN_EXT2       21
-#define PIN_EXT3       14
+#define PIN_SPI_SCK    23
+#define PIN_SPI_MOSI   22
+#define PIN_TFT_DC     21
+#define PIN_TFT_RESET  19
+#define PIN_TFT_CS     18
+// SD：暂不使用 —— 保留定义、不接线、不初始化
+#define PIN_SD_CS      4
+#define PIN_SD_MISO    5
 
 // ---- 滑环串口（与子板通信，2 根线，UART 协议）----
-#define PIN_RING_UART_POS   45   // TX(连子板RX)
-#define PIN_RING_UART_NEG   48   // RX
+// ⚠️ NEG(RX)=12 为 strapping 脚（复位需为低）；若接线后无法启动，请把 RX 换到 4/5 等脚
+#define PIN_RING_UART_POS   15   // TX -> 子板 RX
+#define PIN_RING_UART_NEG   12   // RX <- 子板 TX
+
+// 原 ESP32-S3 的 EXT1~3 预留脚在新板暂不使用，已移除；需要时再按可用 IO 分配。

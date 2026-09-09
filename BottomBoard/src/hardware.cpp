@@ -36,7 +36,7 @@ void init_hardware(void) {
     pinMode(PIN_TMC_ENN, OUTPUT);
     digitalWrite(PIN_TMC_ENN, HIGH);    // 默认驱动断电
 
-    // SPI 屏 + SD（共用 SCK/MOSI，独立片选）
+    // SPI 屏（SCK/MOSI 与 SD 共用总线；SD 预留未接，不初始化）
     pinMode(PIN_SPI_SCK, OUTPUT);
     pinMode(PIN_SPI_MOSI, OUTPUT);
     pinMode(PIN_TFT_DC, OUTPUT);
@@ -44,9 +44,6 @@ void init_hardware(void) {
     digitalWrite(PIN_TFT_RESET, HIGH);
     pinMode(PIN_TFT_CS, OUTPUT);
     digitalWrite(PIN_TFT_CS, HIGH);     // 片选默认拉高
-    pinMode(PIN_SD_CS, OUTPUT);
-    digitalWrite(PIN_SD_CS, HIGH);
-    pinMode(PIN_SD_MISO, INPUT_PULLUP);
 
     // 输入
     pinMode(PIN_HALL, INPUT_PULLUP);    // 强制上拉（交接指南要求）
@@ -54,7 +51,7 @@ void init_hardware(void) {
     pinMode(PIN_ENC_B, INPUT_PULLUP);
     pinMode(PIN_ENC_SW, INPUT_PULLUP);
 
-    // 子板串口：2 根线 UART（POS=45 TX → 子板 POS；NEG=48 RX ← 子板 NEG，见 pins_config.h）
+    // 子板串口：2 根线 UART（POS=TX → 子板 RX；NEG=RX ← 子板 TX，见 pins_config.h）
     Serial1.begin(SUB_UART_BAUD, SERIAL_8N1, SUB_UART_RX_PIN, SUB_UART_TX_PIN);
 
     // TODO: TFT_eSPI / SdFat 初始化（片选互斥，架构 v2 1.3）

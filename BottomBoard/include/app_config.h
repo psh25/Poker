@@ -86,5 +86,5 @@ static const uint8_t kDealDeckSequence[DEAL_TOTAL_CARDS] = { 0, 1, 2, 3 };
 // 物理层为滑环 2 线串口（RX/TX），软件按普通 UART 处理；
 // 若板上有差分收发器，对本层透明。
 #define SUB_UART_BAUD        115200
-#define SUB_UART_RX_PIN      PIN_RING_UART_NEG   // 物理 RX：NEG=48（子板 NEG=TX39 送来）
-#define SUB_UART_TX_PIN      PIN_RING_UART_POS   // 物理 TX：POS=45（子板 POS=RX38 接收）
+#define SUB_UART_RX_PIN      PIN_RING_UART_NEG   // 物理 RX：NEG（子板 TX 送来）
+#define SUB_UART_TX_PIN      PIN_RING_UART_POS   // 物理 TX：POS（子板 RX 接收）

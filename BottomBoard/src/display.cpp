@@ -1,7 +1,7 @@
 /**
  * 屏幕显示（架构 v2 附录 A）：事件驱动、非阻塞发送、只展示不决策。
  * 初步实现：方案选择菜单（旋转切换/取消、短按确认、再按 CONFIRM 发牌）。
- * 屏幕：1.8" ST7735 128x160，SPI（引脚编译参数见 platformio.ini）。
+ * 屏幕：1.8" ST7735 面板 128x160，软件按横屏 160x128 使用（SPI 引脚见 platformio.ini）。
  * 注：当前用 ASCII 文本（TFT_eSPI 默认字体不含中文），中文显示后续可加字体。
  */
 #include <Arduino.h>
@@ -50,7 +50,7 @@ bool display_get_confirmed(void) {
 
 void display_init(void) {
     tft.init();
-    tft.setRotation(2);            // 128x160 竖屏（若方向不对改为 0）
+    tft.setRotation(1);            // 横屏 160x128（若左右颠倒改为 3）
 
 #if DISPLAY_DIAG_COLORS
     // 依次显示 红→绿→蓝→黑，各 300ms：
@@ -73,22 +73,22 @@ static uint8_t s_screen = SCREEN_OTHER;
 
 // 画单行方案（选中项蓝底白字，未选中灰底浅字）
 static void draw_row(int i, uint8_t selectedIndex) {
-    uint16_t y = 20 + i * 26;
+    uint16_t y = 13 + i * 19;      // 横屏：行高 16，行距 19，最多 4 行
     uint16_t bg = (i == selectedIndex) ? TFT_BLUE : TFT_DARKGREY;
     uint16_t fg = (i == selectedIndex) ? TFT_WHITE : TFT_LIGHTGREY;
-    tft.fillRoundRect(10, y, 108, 22, 3, bg);
+    tft.fillRoundRect(8, y, 144, 16, 3, bg);
     tft.setTextColor(fg, bg);
-    tft.setCursor(16, y + 6);
+    tft.setCursor(14, y + 4);
     tft.setTextSize(1);
     tft.print(kSchemeNames[i]);
 }
 
 // IDLE 屏顶部：已确认显示 “Selected: N”，未确认显示 “Selected: -”
 static void draw_idle_header(uint8_t selectedIndex, uint8_t confirmed) {
-    tft.fillRect(10, 4, 108, 10, TFT_BLACK);   // 清掉旧数字
+    tft.fillRect(8, 1, 144, 9, TFT_BLACK);      // 清掉旧数字
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
     tft.setTextSize(1);
-    tft.setCursor(10, 4);
+    tft.setCursor(8, 2);
     if (confirmed) {
         tft.print("Selected: ");
         tft.print(selectedIndex + 1);
@@ -100,13 +100,13 @@ static void draw_idle_header(uint8_t selectedIndex, uint8_t confirmed) {
 // 底部 CONFIRM 按钮：已确认方案 = 绿色可用（再按进入发牌）；未确认 = 置灰
 static void draw_confirm_button(uint8_t confirmed) {
     uint16_t bg = confirmed ? TFT_GREEN : TFT_DARKGREY;
-    tft.fillRoundRect(10, 126, 108, 22, 4, bg);
+    tft.fillRoundRect(8, 92, 144, 18, 4, bg);
     tft.setTextColor(TFT_BLACK, bg);
-    tft.setCursor(40, 133);
+    tft.setCursor(59, 97);                      // 7 字符居中（144 宽 / 6px 每字符）
     tft.print("CONFIRM");
 
     tft.setTextColor(bg, TFT_BLACK);
-    tft.setCursor(10, 152);
+    tft.setCursor(8, 114);
     tft.print(confirmed ? "Press=OK" : "Press=Sel");
 }
 
@@ -115,7 +115,7 @@ static void draw_idle(uint8_t selectedIndex, uint8_t confirmed) {
     tft.fillScreen(TFT_BLACK);
 
     draw_idle_header(selectedIndex, confirmed);
-    tft.drawFastHLine(10, 15, 108, TFT_WHITE);
+    tft.drawFastHLine(8, 11, 144, TFT_WHITE);
 
     for (int i = 0; i < SCHEME_COUNT; i++) {
         draw_row(i, selectedIndex);
@@ -145,29 +145,29 @@ static void draw_dealing(const display_cmd_t *cmd) {
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
     tft.setTextSize(1);
 
-    tft.setCursor(10, 4);
+    tft.setCursor(8, 2);
     tft.print(kSchemeNames[cmd->payload.dealing.scheme % SCHEME_COUNT]);
 
-    tft.setCursor(10, 16);
+    tft.setCursor(8, 12);
     tft.print("Deck: ");
     tft.print(cmd->payload.dealing.deck);
     tft.print("  ");
     tft.print(cmd->payload.dealing.progress);
     tft.print("%");
 
-    tft.setCursor(10, 30);
+    tft.setCursor(8, 22);
     tft.setTextColor(TFT_GREEN, TFT_BLACK);
     tft.print(cmd->payload.dealing.status);
 
     for (uint8_t i = 0; i < cmd->payload.dealing.errorCount && i < DEAL_ERROR_MAX; i++) {
-        tft.setCursor(10, 44 + i * 12);
+        tft.setCursor(8, 33 + i * 10);
         tft.setTextColor(TFT_RED, TFT_BLACK);
         tft.print(cmd->payload.dealing.errors[i]);
     }
 
     // 出错时提示：按下编码器重置回 IDLE
     if (cmd->payload.dealing.errorCount > 0) {
-        tft.setCursor(10, 150);
+        tft.setCursor(8, 116);
         tft.setTextColor(TFT_YELLOW, TFT_BLACK);
         tft.print("Press=Reset");
     }
@@ -180,17 +180,17 @@ static void draw_game_active(const display_cmd_t *cmd) {
     tft.setTextSize(1);
 
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.setCursor(10, 4);
+    tft.setCursor(8, 2);
     tft.print("Game Active");
 
     if (cmd->payload.game.cardInfo[0]) {          // 有牌面信息时显示第二行
         tft.setTextColor(TFT_CYAN, TFT_BLACK);
-        tft.setCursor(10, 16);
+        tft.setCursor(8, 12);
         tft.print(cmd->payload.game.cardInfo);
     }
 
     tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-    tft.setCursor(10, 150);
+    tft.setCursor(8, 116);
     tft.print("Hold=End,Reset");
 }
 
@@ -215,7 +215,7 @@ void display_handle_command(const display_cmd_t *cmd) {
         tft.fillScreen(TFT_BLACK);
         tft.setTextColor(TFT_WHITE, TFT_BLACK);
         tft.setTextSize(1);
-        tft.setCursor(10, 70);
+        tft.setCursor(8, 60);
         tft.print(cmd->payload.game.cardInfo);
         break;
 
@@ -223,7 +223,7 @@ void display_handle_command(const display_cmd_t *cmd) {
         tft.fillScreen(TFT_RED);
         tft.setTextColor(TFT_WHITE, TFT_RED);
         tft.setTextSize(1);
-        tft.setCursor(10, 70);
+        tft.setCursor(8, 60);
         tft.print(cmd->payload.error.errorMsg);
         break;
 
@@ -231,7 +231,7 @@ void display_handle_command(const display_cmd_t *cmd) {
         tft.fillScreen(TFT_BLACK);
         tft.setTextColor(TFT_YELLOW, TFT_BLACK);
         tft.setTextSize(1);
-        tft.setCursor(10, 70);
+        tft.setCursor(8, 60);
         tft.print(cmd->payload.debug.msg);
         delay(700);   // 调试用：让提示可见一段时间，之后下一条命令覆盖
         break;

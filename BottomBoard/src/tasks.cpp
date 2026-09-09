@@ -836,7 +836,7 @@ void vEncoderTask(void *pv) {
 // ================= 屏幕显示任务 =================
 void vDisplayTask(void *pv) {
     // 低(1) | 任意核心 | 队列触发（事件驱动，非轮询）
-    display_init();   // 初始化屏幕（ILI9341，320x240）
+    display_init();   // 初始化屏幕（ST7735，横屏 160x128，见 display.cpp）
     display_cmd_t cmd;
     for (;;) {
         if (xQueueReceive(xDisplayQueue, &cmd, portMAX_DELAY) == pdPASS) {

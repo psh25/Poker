@@ -114,6 +114,12 @@ def start_camera(calibrate=False):
     cam.pixformat(csi.RGB565)
     cam.framesize(csi.QVGA)
     cam.framebuffers(1)
+
+    # Convert the physical camera mounting orientation
+    # into the canonical image orientation used by the recognition pipeline.
+    cam.hmirror(C.CAMERA_ROTATE_180)
+    cam.vflip(C.CAMERA_ROTATE_180)
+
     if calibrate:
         cam.snapshot(time=C.CAMERA_SETTLE_MS)
         settings = {"exposure_us": cam.exposure_us(), "gain_db": cam.gain_db(),

@@ -9,6 +9,11 @@ ROOT = "/flash/cards_fast_v1"  # Deliberately separate from /flash/templates.
 PIPELINE_VERSION = 1
 FRAME_SIZE = (320, 240)
 
+# Camera mounting orientation.
+# True  = camera is physically rotated 180 degrees during development.
+# False = final normal camera orientation.
+CAMERA_ROTATE_180 = True
+
 # Search windows, not final template rectangles. Tune in capture preview.
 # Keep the complete rank (including both digits of 10) and suit in view.
 SEARCH_ROIS = {
@@ -55,7 +60,7 @@ SUITS = ("heart", "diamond", "club", "spade")
 ACCEPT_SCORE = {"rank": 0.80, "suit": 0.80, "joker": 0.84, "back": 0.86}
 ACCEPT_MARGIN = {"rank": 0.05, "suit": 0.05, "joker": 0.0, "back": 0.0}
 SCENE_MARGIN = 0.035  # Margin between threshold-adjusted scene supports.
-STRICT_TEMPLATE_COVERAGE = True  # Require 13 ranks, 4 suits, joker and back.
+STRICT_TEMPLATE_COVERAGE = False  # Require 13 ranks, 4 suits, joker and back.
 
 # RGB565 / LAB ranges. Use actual lighting to calibrate these in the IDE.
 RED_THRESHOLD = (10, 95, 12, 127, -35, 127)

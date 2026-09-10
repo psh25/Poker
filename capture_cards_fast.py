@@ -16,12 +16,12 @@ import cards_fast_core as V
 
 # ----------------------- Edit these before running -----------------------
 CAPTURE_KIND = "normal"  # "normal", "joker", "back"; no no-card class.
-RANK_LABEL = "9"
+RANK_LABEL = "4"
 SUIT_LABEL = "diamond"
 JOKER_COLOR = "red"  # Metadata for actual red/black joker, not a guessed label.
 NORMAL_SAVE_GROUPS = ("rank",)  # Change to ("suit",) for suit collection.
 SAVE_TEMPLATES = True  # False: independent validation set, even if extraction fails.
-CALIBRATE_CAMERA = False  # Set True ONCE, before any templates in this ROOT.
+CALIBRATE_CAMERA = True  # Set True ONCE, before any templates in this ROOT.
 CAPTURE_CORRECTION_DEG = 0  # Nominal pose normally needs no correction.
 CANDIDATE_INDEX = {"rank": 0, "suit": 0, "joker": 0}
 PREVIEW_INTERVAL_MS = 150
@@ -30,8 +30,8 @@ MAX_TEMPLATES_PER_LABEL = 4
 # Template capture uses tight windows at the nominal mechanical pose. These
 # do not have to equal the wider runtime search windows in recognize_cards_fast.py.
 CAPTURE_ROIS = {
-    "rank": (80, 25, 110, 135),
-    "suit": (80, 130, 110, 110),
+    "rank": (90, 25, 110, 135),
+    "suit": (90, 130, 110, 110),
     # Keep only the stable visible JOKER lettering, without the artwork.
     "joker": (100, 30, 70, 130),
     "back": (95, 45, 80, 120),

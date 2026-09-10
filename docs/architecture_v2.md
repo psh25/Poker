@@ -28,6 +28,10 @@ v2.4（2026-09-09）修订：屏幕由竖屏 128×160 改为横屏（逻辑 160�
 
 v2.5（2026-09-10）修订：实体牌堆位由 4 个扩展到 8 个；发牌方案改为**参数驱动**——预置游戏（斗地主/掼蛋/升级/德州6人/桥牌/测试）+ 串口自定义参数统一生成“发牌计划”，发牌任务只执行计划，不再为每种玩法写发牌逻辑。
 
+v2.6（2026-09-10）修订：摄像头改为“截图后识别”，截图时序由底板统一控制：上一张发牌成功 → 底板发 `CMD_CAM_CAPTURE` → 子板拉高 `PIN_CAM_TRIG` 触发截图 → 转盘转到目标牌堆 → 等待识别完成（`EVT_CARD_VALUE`）→ 下发发牌。
+
+v2.7（2026-09-10）修订：子板新增摄像头**回传接收**（不主动取图：UART 中断收帧 → 主循环解析 → 发 `EVT_CARD_VALUE`，超时保留“发空牌”调试路径）；实装子板**心跳**（`CMD_STATUS_QUERY` / `EVT_STATUS` + 3s 掉线判定）；统一两端 CLI 别名规则（去前缀 → 全小写 → 去下划线）；删除未使用的 `DISPLAY_CMD_CARD_PREVIEW`。
+
 与 v1 的逐项差异见 [architecture_v2_diff.md](architecture_v2_diff.md)；子板详细设计见 [subboard_architecture.md](subboard_architecture.md)。
 
 ---
@@ -319,6 +323,7 @@ flowchart TD
 | 底板 → 子板 | `CMD_STATUS_QUERY` | 查询子板状态 |
 | 底板 → 子板 | `CMD_SELF_TEST` | 触发子板自检 |
 | 底板 → 子板 | `CMD_RESET` | 复位子板状态机（错误恢复） |
+| 底板 → 子板 | `CMD_CAM_CAPTURE` | 触发摄像头截图（子板拉高 `PIN_CAM_TRIG` 一个脉冲） |
 | 子板 → 底板 | `EVT_READY` | 上电自检完成，等待命令 |
 | 子板 → 底板 | `EVT_CARD_OUT` | 光敏检测到一张牌发出（成功标志） |
 | 子板 → 底板 | `EVT_CARD_VALUE` | 牌面识别结果（牌序号、花色、点数） |
@@ -327,6 +332,10 @@ flowchart TD
 | 子板 → 底板 | `EVT_ERROR_MOTOR_STALL` | 发牌电机堵转（如支持电流检测） |
 | 子板 → 底板 | `EVT_ERROR_CAM_FAIL` | 摄像头识别失败（标记未知牌） |
 | 子板 → 底板 | `EVT_ACK` | 命令确认回执（调试用，data=原 type+原 data） |
+| 子板 → 底板 | `EVT_STATUS` | 状态回执（心跳应答）：data=[state, error, countLo, countHi] |
+
+> 心跳（v2.7）：底板监控任务每 `COMM_HEARTBEAT_MS`(1s) 发 `CMD_STATUS_QUERY`，子板回 `EVT_STATUS`；
+> `COMM_DEAD_TIMEOUT_MS`(3s) 内没收到任何子板帧即判定掉线，串口打印 `[MON] sub board OFFLINE`，可用底板 CLI `subboard` 查询。
 
 ### 7.4 实时上报与统一上传原则
 
@@ -339,7 +348,7 @@ flowchart TD
 
 实现文件：`BottomBoard/include/deal_config.h` / `src/deal_config.cpp`。
 
-- **数据模型**：发牌计划 = 有序的“发牌组”列表；每组 = `{源牌堆编号, 张数, 标签}`。执行方式固定为：转盘转到该牌堆 → 从该牌堆连续发 count 张（每张仍走摄像头识别/光敏确认）→ 下一组。
+- **数据模型**：发牌计划 = 有序的“发牌组”列表；每组 = `{源牌堆编号, 张数, 标签}`。每张牌执行顺序固定为：确认上一张成功 → 底板发截图命令（子板拉高 `PIN_CAM_TRIG`）→ 转盘转到该牌堆 → 等待识别完成 → 下发发牌 → 等待出牌成功；一组发完再进入下一组。
 - **参数模型**：`{人数, 每人张数, 公共牌张数, 底牌张数}`。人数每人占 1 个实体牌堆，公共牌/底牌各占 1 个，组数上限 = 牌堆数上限 8。
 - **预置方案**：Doudizhu(3×17+底3)、Guandan(4×27)、Shengji(4×25+底8)、Texas6(6×2+公共5)、Bridge(4×13)、Test(4×1)、RotateTest(只旋转)、Custom(串口自定义)。
 - **自定义入口（当前）**：串口 CLI `game list` / `game info` / `game use <1-8|名称>` / `game custom players=N hand=N public=N bottom=N`；屏幕菜单同步显示 8 个方案并支持滚动。
@@ -399,7 +408,6 @@ typedef enum {
     DISPLAY_CMD_SELECT,         // 高亮某个方案（含是否已确认）
     DISPLAY_CMD_DEALING,        // 发牌中（进度）
     DISPLAY_CMD_GAME_ACTIVE,    // 牌局进行中（牌面信息）
-    DISPLAY_CMD_CARD_PREVIEW,   // 小程序选牌后预览
     DISPLAY_CMD_ERROR,          // 错误信息
     DISPLAY_CMD_DEBUG           // 调试提示（如“已确认/已取消”）
 } display_cmd_type_t;

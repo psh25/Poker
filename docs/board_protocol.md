@@ -49,6 +49,7 @@ for b in [type, len] + data:
 | 0x03 | `CMD_STATUS_QUERY` | 无 | 查询状态 | `A5 03 00 3F AA` |
 | 0x04 | `CMD_SELF_TEST` | 无 | 触发自检 | `A5 04 00 54 AA` |
 | 0x05 | `CMD_RESET` | 无 | 复位状态机（错误恢复） | `A5 05 00 41 AA` |
+| 0x06 | `CMD_CAM_CAPTURE` | 无 | 触发摄像头截图（子板拉高 PIN_CAM_TRIG） | `A5 06 00 62 AA` |
 
 ## 4. 事件（子板 → 底板）
 
@@ -62,6 +63,7 @@ for b in [type, len] + data:
 | 0x86 | `EVT_ERROR_MOTOR_STALL` | 无 | 发牌电机堵转 |
 | 0x87 | `EVT_ERROR_CAM_FAIL` | 无 | 摄像头识别失败 |
 | 0x88 | `EVT_ACK` | 原 type + 原 data | 命令确认回执（调试用） |
+| 0x89 | `EVT_STATUS` | [state, error, countLo, countHi] | 状态回执：心跳应答（`CMD_STATUS_QUERY` 的响应，不进业务队列） |
 
 ## 5. 确认机制（ACK）
 
@@ -77,6 +79,8 @@ for b in [type, len] + data:
 ```
 help                                # 帮助
 state                               # 打印底板当前状态机状态
+dealstart | stop | reset | confirm  # 启动发牌 / 停机 / 复位 / 确认方案
+subboard                            # 打印子板在线状态与心跳时间
 sub <cmd> [hex data...]             # 底板 → 子板（自动组帧 + 自动算 CRC）
 sim <type> [hex data...]            # 模拟子板 → 底板事件（本地喂给协议分发）
 idle | select <n> | dealing <pct>   # 底板屏幕测试
@@ -87,11 +91,12 @@ game custom players=N hand=N public=N bottom=N   # 自定义牌局参数
 ```
 
 - `cmd` / `type` 支持文本别名或 hex：
-  - 命令别名：`deal` / `stop` / `status` / `selftest` / `reset`（0x01~0x05）；
-  - 事件别名：`ready` / `cardout` / `cardvalue` / `dealdone` / `jam` / `motorstall` / `camfail` / `ack`（0x81~0x88）；
+  - 命令别名：`dealstart` / `stop` / `statusquery` / `selftest` / `reset` / `camcapture`（0x01~0x06）；
+  - 事件别名：`ready` / `cardout` / `cardvalue` / `dealdone` / `errorcardjam` / `errormotorstall` / `errorcamfail` / `ack` / `status`（0x81~0x89）；
   - 也可直接写 hex，如 `sub 0x03`。
 - 可选 `hex data...`：空格分隔的十六进制数据，如 `sub 0x01 03 04`。
-- 别名规则：枚举名去掉 `CMD_` / `EVT_` 前缀后的小写（如 `EVT_DEAL_DONE` → `dealdone`，`EVT_ERROR_MOTOR_STALL` → `motorstall`）。
+- 别名规则（两端统一）：枚举名**去掉前缀**（`CMD_` / `EVT_`）→ **全部小写** → **去掉下划线**。
+  例：`CMD_DEAL_START` → `dealstart`、`CMD_STATUS_QUERY` → `statusquery`、`EVT_ERROR_MOTOR_STALL` → `errormotorstall`。
 - `sub` 走 `proto_send()` 自动组帧（含 CRC），**无需手算 len / CRC**；
 - `sim` 直接调用 `proto_on_event()`，等价于子板真的发来一帧（且已通过 CRC 校验）。
 
@@ -102,6 +107,7 @@ sub status      → 底板: [CLI] -> SUB type=0x03 ... sent
                   子板: [SUB] RX: cmd=0x03 ... / [SUB] TX: ACK cmd=0x03
                   底板: [BOT] SUB-ACK: cmd=0x03
 sim cardout     → 底板模拟收到光敏事件，触发协议分发
+sub camcapture  → 子板拉高 PIN_CAM_TRIG 触发一次摄像头截图
 select 3        → 屏幕高亮方案 3
 game custom players=3 hand=17 public=0 bottom=3  → 生成斗地主式自定义计划并选中 Custom
 game info       → 打印当前计划的发牌组（牌堆/张数/标签）
@@ -110,14 +116,14 @@ game info       → 打印当前计划的发牌组（牌堆/张数/标签）
 **子板串口（USB）**同样支持直接注入命令（模拟底板发来）：
 
 ```
-help | deal | stop | status | selftest | reset | <hex type> [hex data...]
+help | dealstart | stop | statusquery | selftest | reset | camcapture | auto [n|off] | mtest | <hex type> [hex data...]
 ```
 
 输入后子板打印 `[CLI] inject ...`、`[SUB] RX:...`，并正常回发 ACK。
 
 ## 7. 新增命令（扩展指南）
 
-- **类型空间**：命令 `0x01~0x0F`（已用 0x01~0x05）、事件 `0x81~0x8F`（已用 0x81~0x88）；`0x10~0x7F`、`0x90~0xFF` 预留。
+- **类型空间**：命令 `0x01~0x0F`（已用 0x01~0x06）、事件 `0x81~0x8F`（已用 0x81~0x88）；`0x10~0x7F`、`0x90~0xFF` 预留。
 - **载荷**：每帧最多 32 字节（`PROTO_MAX_DATA`），CRC 自动计算。
 
 新增一条命令只需 4 步：
@@ -134,7 +140,7 @@ help | deal | stop | status | selftest | reset | <hex type> [hex data...]
 - **CMD** = Command（命令）：底板 → 子板，枚举 `CMD_*`，取值 0x01~0x0F。
 - **EVT** = Event（事件）：子板 → 底板，枚举统一 `EVT_*`（错误事件为 `EVT_ERROR_*`），取值 0x81~0x8F。
 - **ACK** = Acknowledgment（确认 / 应答）：`EVT_ACK`，子板收到合法命令后回发的回执。
-- **CLI 别名** = 枚举名去掉前缀后的小写（如 `CMD_STATUS_QUERY` → `status`，`EVT_ERROR_MOTOR_STALL` → `motorstall`）。
+- **CLI 别名** = 枚举名去前缀 → 全小写 → 去下划线（如 `CMD_STATUS_QUERY` → `statusquery`，`EVT_ERROR_MOTOR_STALL` → `errormotorstall`）。
 - 串口打印前缀统一：底板 `[BOT]`，子板 `[SUB]`，调试命令行 `[CLI]`。
 
 ## 9. 常见问题
@@ -161,13 +167,16 @@ help | deal | stop | status | selftest | reset | <hex type> [hex data...]
 
 | type | 含义 | data | 与 CLI 对应 |
 |------|------|------|-------------|
-| 0x01 | 启动发牌（复用板间 `CMD_DEAL_START` 语义） | 无 | `deal` |
+| 0x01 | 启动发牌（复用板间 `CMD_DEAL_START` 语义） | 无 | `dealstart` |
 | 0x02 | 停机：发子板 `CMD_STOP` + 底板回 IDLE | 无 | `stop` |
-| 0x03 | 状态查询（回 0x91） | 无 | `state` |
+| 0x03 | 状态查询（回 0x91） | 无 | `sub statusquery` |
 | 0x04 | 触发子板自检（转发） | 无 | `sub selftest` |
 | 0x05 | 复位：发子板 `CMD_RESET` + 底板回 IDLE | 无 | `reset` |
 | 0x10 | 选择方案（仅 IDLE 有效） | [0]=0~7 | `select N` / `game use N` |
 | 0x11 | 确认方案（两段式第一步） | 无 | `confirm` |
+
+> 心跳：底板监控任务每 `COMM_HEARTBEAT_MS`（1s）发一次板间 `CMD_STATUS_QUERY`（0x03），
+> 子板回 `EVT_STATUS`（0x89）；`COMM_DEAD_TIMEOUT_MS`（3s）内没有任何子板帧即判定掉线（`[MON] sub board OFFLINE`）。
 
 ### 10.3 底板 → 主机事件
 

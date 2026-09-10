@@ -46,7 +46,9 @@ static void cli_feed_byte(char c) {
 
 static void sub_cli_run(const char *line) {
     if (strcmp(line, "help") == 0) {
-        dbg_println("[CLI] deal|stop|status|selftest|reset|auto <n>|auto off | <hex type> [hex data...]");
+        // 命令别名规则：枚举名去掉前缀(CMD_/EVT_) → 全小写 → 去掉下划线
+        dbg_println("[CLI] dealstart|stop|statusquery|selftest|reset|camcapture");
+        dbg_println("[CLI] auto [n|off] | mtest | <hex type> [hex data...]");
         dbg_println("[CLI] auto        = 无限自动发牌");
         dbg_println("[CLI] auto <n>    = 自动发 n 张后停");
         dbg_println("[CLI] auto off    = 停止自动发牌（当前这张发完为止）");
@@ -73,11 +75,12 @@ static void sub_cli_run(const char *line) {
     uint8_t type = 0;
     const char *data_s = NULL;
 
-    if      (strcmp(line, "deal") == 0)     type = CMD_DEAL_START;
-    else if (strcmp(line, "stop") == 0)     type = CMD_STOP;
-    else if (strcmp(line, "status") == 0)   type = CMD_STATUS_QUERY;
-    else if (strcmp(line, "selftest") == 0) type = CMD_SELF_TEST;
-    else if (strcmp(line, "reset") == 0)    type = CMD_RESET;
+    if      (strcmp(line, "dealstart") == 0)   type = CMD_DEAL_START;
+    else if (strcmp(line, "stop") == 0)        type = CMD_STOP;
+    else if (strcmp(line, "statusquery") == 0) type = CMD_STATUS_QUERY;
+    else if (strcmp(line, "selftest") == 0)    type = CMD_SELF_TEST;
+    else if (strcmp(line, "reset") == 0)       type = CMD_RESET;
+    else if (strcmp(line, "camcapture") == 0)  type = CMD_CAM_CAPTURE;
     else {
         // 通用格式：<hex type> [hex data...]
         char buf[48];
@@ -157,6 +160,7 @@ void loop() {
     while (sub_uart_read_byte(&b)) {
         proto_rx_byte(b);
     }
+    sub_camera_service();   // 摄像头回传解析：触发脉冲收尾 / 结果上报
 
     // 2) 调试：USB CDC + CH340 双路读入命令行（模拟底板发来）
     while (Serial.available() > 0)  cli_feed_byte((char)Serial.read());

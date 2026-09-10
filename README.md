@@ -41,9 +41,11 @@ DealerMachine/
 - **底板：FreeRTOS 多任务**；**子板：裸机（超级循环 + 中断）**，子板是“带反馈的执行器”。
 - **通信原则**：子板 → 底板逐张实时上报（光敏/识别/异常），底板 → 小程序整局统一上传。
 - **板间协议**：`0xA5 | type | len | data | crc8 | 0xAA`，掉线超时保护（详见 [board_protocol.md](docs/board_protocol.md)）。
-- **命令/事件命名**：命令统一 `CMD_*`，事件统一 `EVT_*`（错误事件为 `EVT_ERROR_*`）；CLI 别名 = 枚举名去前缀的小写（`status`、`dealdone`、`motorstall`）。
+- **命令/事件命名**：命令统一 `CMD_*`，事件统一 `EVT_*`（错误事件为 `EVT_ERROR_*`）；CLI 别名 = 枚举名**去前缀 → 全小写 → 去下划线**（`CMD_DEAL_START`→`dealstart`、`EVT_ERROR_MOTOR_STALL`→`errormotorstall`），两端一致。
 - **状态机**：`IDLE → DEALING → GAME_ACTIVE`（选方案并入 IDLE：旋转切换/取消、短按确认方案、再按 CONFIRM 发牌；GAME_ACTIVE 长按编码器确认结束并直接回 IDLE），仅状态管理任务负责切换（单写者）。
 - **发牌方案参数化**：方案 = 预置参数（斗地主/掼蛋/升级/德州6人/桥牌/测试等）+ 串口自定义参数；发牌任务只执行“发牌组列表”（转到位→连发 N 张→下一堆），新增玩法不再写发牌逻辑，详见 `include/deal_config.h`。
+- **摄像头时序**：上一张发牌成功后，底板发 `CMD_CAM_CAPTURE` → 子板拉高 `PIN_CAM_TRIG` 截图 → 转盘转到目标牌堆 → 等待识别完成 → 再下发发牌指令。子板**只接收、不主动取图**：摄像头回传帧经 UART 中断入环形缓冲，主循环解析后发 `EVT_CARD_VALUE`；未回传时按“发空牌”继续（调试路径）。
+- **子板心跳**：底板每 1s 发 `CMD_STATUS_QUERY`，子板回 `EVT_STATUS`；3s 内无任何子板帧判定掉线，底板 CLI `subboard` 可查询。
 - **屏幕显示**：事件驱动（队列触发），非轮询，只展示不决策。
 
 ### 底板任务与优先级
@@ -94,6 +96,9 @@ DealerMachine/
 - [ ] 霍尔两段式归零与失步校准
 - [x] 屏幕显示（ST7735 横屏 160×128：方案列表 + 两段式确认）
 - [x] 参数驱动自定义牌局（8 个牌堆位；预置斗地主/掼蛋/升级/德州6人/桥牌/测试 + Custom）
+- [x] 摄像头截图触发时序（底板控制 `CMD_CAM_CAPTURE` → 子板 `PIN_CAM_TRIG`）
+- [x] 摄像头回传接收骨架（子板 UART 中断收帧 + 解析 → `EVT_CARD_VALUE`；帧格式为占位，待模组确定）
+- [x] 子板心跳与掉线检测（`CMD_STATUS_QUERY` / `EVT_STATUS`）
 - [ ] SD 卡驱动（SdFat，与屏幕共用 SPI 的片选互斥）
 - [x] 底板 CLI 调试（sub / sim / setstate / 屏幕测试）
 - [x] 底板 BLE 基础（NUS 收命令帧/发状态帧，帧格式与板间一致）

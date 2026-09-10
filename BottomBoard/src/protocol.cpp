@@ -101,7 +101,27 @@ void proto_rx_feed(proto_rx_t *rx, uint8_t b) {
 //   EVT_CARD_OUT → xCardDetectedSem；EVT_READY → xDeckReadySem
 //   所有事件 → xSubboardRxQueue（发牌控制任务消费）
 //   EVT_CARD_VALUE 额外 → xCameraQueue（状态管理/显示）
+//   EVT_ACK / EVT_STATUS 仅调试与心跳用，不入业务队列
+static volatile uint32_t s_last_sub_rx_ms = 0;
+static volatile bool     s_sub_seen = false;
+
+void proto_note_sub_rx(void) {
+    s_last_sub_rx_ms = millis();
+    s_sub_seen = true;
+}
+
+bool sub_comm_online(void) {
+    if (!s_sub_seen) return false;
+    return (uint32_t)(millis() - s_last_sub_rx_ms) < (uint32_t)COMM_DEAD_TIMEOUT_MS;
+}
+
+uint32_t sub_comm_last_rx_ms(void) {
+    return s_last_sub_rx_ms;
+}
+
 void proto_on_event(const proto_frame_t *frame) {
+    proto_note_sub_rx();   // 心跳：任何来自子板的帧都算“在线”
+
     // 调试①：子板确认回执（EVT_ACK），回显收到的是哪条指令
     if (frame->type == EVT_ACK) {
         if (frame->len >= 1) {
@@ -114,6 +134,18 @@ void proto_on_event(const proto_frame_t *frame) {
             Serial.println("[BOT] SUB-ACK: (empty)");
         }
         return;   // ACK 仅用于调试，不进业务队列
+    }
+
+    // 心跳应答（EVT_STATUS）：打印状态，不进业务队列（避免占满 xSubboardRxQueue）
+    if (frame->type == EVT_STATUS) {
+        if (frame->len >= 4) {
+            uint16_t count = (uint16_t)(frame->data[2] | (frame->data[3] << 8));
+            Serial.printf("[BOT] SUB-STATUS: state=%u error=%u count=%u\n",
+                          (unsigned)frame->data[0], (unsigned)frame->data[1], count);
+        } else {
+            Serial.println("[BOT] SUB-STATUS: (short)");
+        }
+        return;
     }
 
     busy_subboard_event(frame->type, frame->data, frame->len);

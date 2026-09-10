@@ -10,6 +10,10 @@ v1.2（2026-09-08）修订：引脚按最新版 `include/pins_config.h` 更新�
 
 v1.3（2026-09-10）修订：定时出牌在正转与反转之间新增 BRAKE（短刹车）状态，缓解换向电流冲击；对应新增 `MOTOR_BRAKE_MS` 与 `busy_motor_brake()`。
 
+v1.4（2026-09-10）修订：新增 `CMD_CAM_CAPTURE` 截图触发命令；子板收到后拉高 `PIN_CAM_TRIG` 一个脉冲（`CAM_TRIG_PULSE_MS`），截图时序由底板发牌流程统一控制。
+
+v1.5（2026-09-10）修订：子板**不主动取图**，改为接收摄像头回传：`Serial2`（PIN_CAM_RX）中断 → 环形缓冲 → 主循环解析 → 发 `EVT_CARD_VALUE`；超时未回传按 `CAM_EMPTY_ON_TIMEOUT` 发空牌（保留调试路径）。新增 `EVT_STATUS` 心跳应答（`CMD_STATUS_QUERY` 的响应）。
+
 ## 一、职责定位
 
 子板是**“带反馈的执行器”**，不是决策者：
@@ -102,6 +106,7 @@ stateDiagram-v2
 | 光敏 GPIO 中断 | 检测牌通过 | 置位标志 + 记录计数；配合消抖/多次采样防电机干扰误触发 |
 | 软件超时定时器 | 光敏 500ms 超时 | 用于卡牌/漏发检测 |
 | 串口 TX | 事件上报 | 逐张实时上报，不缓存整副牌 |
+| 摄像头 TRIG 输出 | 截图触发 | 收到 `CMD_CAM_CAPTURE` 后拉高 `PIN_CAM_TRIG` 一个 `CAM_TRIG_PULSE_MS` 脉冲 |
 | 电流检测（如有） | 发牌电机堵转 | 模拟输入或驱动芯片报警脚，异常立即上报 |
 
 > 设计原则：中断函数内**不做耗时操作**（不识别图像、不解析协议），只置标志位/写缓冲；全部业务在 `loop()` 状态机中处理。
@@ -131,6 +136,7 @@ stateDiagram-v2
 | `CMD_STATUS_QUERY` | — | 查询当前状态与计数 |
 | `CMD_SELF_TEST` | — | 触发自检（光敏、电机驱动、摄像头） |
 | `CMD_RESET` | — | 复位状态机（从 ERROR 恢复） |
+| `CMD_CAM_CAPTURE` | — | 触发一次摄像头截图（拉高 `PIN_CAM_TRIG` 一个脉冲） |
 
 ### 5.4 事件（子板 → 底板）
 
@@ -143,6 +149,7 @@ stateDiagram-v2
 | `EVT_ERROR_CARD_JAM` | 超时值 | 光敏超时/卡牌，**立即上报** |
 | `EVT_ERROR_MOTOR_STALL` | 电流/时间 | 发牌电机堵转（如支持检测） |
 | `EVT_ERROR_CAM_FAIL` | 错误码 | 摄像头识别失败（该张标记为未知牌） |
+| `EVT_STATUS` | [state, error, countLo, countHi] | 状态回执：`CMD_STATUS_QUERY` 的应答（心跳） |
 
 ### 5.5 实时上报原则（重点）
 
@@ -154,6 +161,24 @@ stateDiagram-v2
 ### 5.6 串口调试辅助
 
 最新版硬件配置已移除调试 RGB LED（`pins_config.h` 中无 `PIN_LED_*`），链路观察改为串口日志：收到任意字节/完整帧/回发 ACK 都会在调试串口打印（见 [board_protocol.md](board_protocol.md)），USB 串口手动注入命令同样会回显解析结果。
+
+### 5.7 摄像头回传（子板只接收，不主动取图）
+
+子板收到 `CMD_CAM_CAPTURE` 后只做两件事：拉高 `PIN_CAM_TRIG`（`CAM_TRIG_PULSE_MS` 脉冲，摄像头检测上升沿），然后等待摄像头把识别结果**发回来**。
+
+接收链路：`Serial2`（`PIN_CAM_RX`，摄像头 TX → 子板 RX）`onReceive` 中断 → 环形缓冲（`CAM_RX_RING_SIZE`）→ 主循环 `sub_camera_service()` 解析 → 发 `EVT_CARD_VALUE`。
+
+回传帧格式（**占位**，模组确定后只需改 `hardware.cpp` 顶部与解析函数）：
+
+```
+byte0   帧头   0x5A
+byte1   类型   0x01 = 识别结果
+byte2   长度 n data 字节数（n ≤ CARD_DATA_MAX）
+byte3.. 数据   识别载荷（约定：花色 1B + 点数 1B，其余待定）
+末尾    校验   从 byte1 到 data 末字节的累加和低 8 位
+```
+
+超时处理：触发后 `CAM_RESULT_TIMEOUT_MS` 内未收到合法回传 → `CAM_EMPTY_ON_TIMEOUT=1` 时发一帧**空** `EVT_CARD_VALUE`（保留“发空牌”调试路径，整条流程仍可跑通）；改为 0 则上报 `EVT_ERROR_CAM_FAIL`。
 
 ## 六、数据与内存设计
 

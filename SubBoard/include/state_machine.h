@@ -27,6 +27,7 @@ sub_state_t sub_state_get(void);
 void sub_state_run(void);                       // 主循环调用：执行状态机
 void sub_state_handle_command(uint8_t cmd, const uint8_t *data, uint8_t len);
 void sub_mark_error(uint8_t errorType);         // 物理层异常入口（立即上报）
+void sub_status_report(void);                   // 状态回执（心跳应答 EVT_STATUS）
 
 // ---- 自动连续发牌（调试用：不需要底板，自己一张接一张发）----
 void sub_auto_deal_arm(long count);   // 上电延时后自动开始（AUTO_DEAL_START_DELAY_MS）

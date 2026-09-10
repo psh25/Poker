@@ -34,6 +34,16 @@
 #define MOTOR_STARTUP_MS 50    // 电机启动完成判定（光敏模式用）
 #define PHOTO_TIMEOUT_MS 500   // 光敏超时：发牌电机启动后未检测到牌 → 卡牌/漏发
 #define CAMERA_TIMEOUT_MS 2000 // 摄像头识别超时 → 按未知牌处理
+#define CAM_TRIG_PULSE_MS 200   // PIN_CAM_TRIG 截图触发脉冲宽度（ms，高电平有效）
+
+// ===== 摄像头回传（截图结果由摄像头主动发回，子板只接收解析）=====
+// 硬件：摄像头 TX → 子板 PIN_CAM_RX；子板 PIN_CAM_TX 备用（不主动下发）
+#define CAM_UART_BAUD 115200        // 待摄像头模组手册确认
+#define CAM_RX_RING_SIZE 128        // 接收环形缓冲（中断写入，主循环解析）
+#define CAM_RESULT_TIMEOUT_MS 2000  // 触发截图后等待回传的最长时间（超时→按未知牌处理）
+// 1 = 超时未收到回传时，仍发一帧空 EVT_CARD_VALUE（保留“发空牌”调试功能）
+// 0 = 超时直接上报 EVT_ERROR_CAM_FAIL
+#define CAM_EMPTY_ON_TIMEOUT 1
 
 // ===== 串口（与底板通信）=====
 #define SUB_UART_BAUD 115200

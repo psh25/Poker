@@ -10,8 +10,8 @@
  * CRC 覆盖 type + len + data。
  *
  * type 分配：
- *   0x01~0x0F  底板 → 子板：命令（已用 0x01~0x05）
- *   0x81~0x8F  子板 → 底板：事件（已用 0x81~0x88，统一 EVT_ 前缀，错误事件为 EVT_ERROR_*）
+ *   0x01~0x0F  底板 → 子板：命令（已用 0x01~0x06）
+ *   0x81~0x8F  子板 → 底板：事件（已用 0x81~0x89，统一 EVT_ 前缀，错误事件为 EVT_ERROR_*）
  *   其余 0x10~0x7F / 0x90~0xFF 预留
  * 新增命令：两端 protocol.h 同步加枚举 → 子板 state_machine.cpp 加 case →
  *          （可选）底板 CLI 加文本映射；帧结构 / CRC 无需修改。
@@ -28,7 +28,8 @@ typedef enum {
     CMD_STOP         = 0x02,  // 停止/急停
     CMD_STATUS_QUERY = 0x03,  // 查询状态
     CMD_SELF_TEST    = 0x04,  // 触发自检
-    CMD_RESET        = 0x05   // 复位状态机（错误恢复）
+    CMD_RESET        = 0x05,  // 复位状态机（错误恢复）
+    CMD_CAM_CAPTURE  = 0x06   // 触发摄像头截图（子板拉高 PIN_CAM_TRIG）
 } proto_cmd_t;
 
 // 子板 → 底板：事件（0x81~0x8F）
@@ -40,7 +41,8 @@ typedef enum {
     EVT_ERROR_CARD_JAM    = 0x85,  // 光敏超时/卡牌
     EVT_ERROR_MOTOR_STALL = 0x86,  // 发牌电机堵转
     EVT_ERROR_CAM_FAIL    = 0x87,  // 摄像头识别失败
-    EVT_ACK               = 0x88   // 收到命令的确认回执（data = 原 type + 原 data）
+    EVT_ACK               = 0x88,  // 收到命令的确认回执（data = 原 type + 原 data）
+    EVT_STATUS            = 0x89   // 子板状态回执（心跳应答）：data = [state, error, countLo, countHi]
 } proto_evt_t;
 
 typedef struct {
@@ -50,7 +52,7 @@ typedef struct {
 } proto_frame_t;
 
 // ---- 主机（小程序 BLE / 串口 CLI）↔ 底板：与板间命令同语义复用 ----
-// 0x01 发牌 / 0x02 停机 / 0x03 查询 / 0x04 自检 / 0x05 重置 与底板→子板命令同号，
+// 0x01 发牌 / 0x02 停机 / 0x03 查询 / 0x04 自检 / 0x05 重置 / 0x06 截图 与底板→子板命令同号，
 // 底板收到后执行“底板级动作”，其中需要子板的再由底板转发板间帧；
 // 底板级独有操作使用 0x10+，底板 → 主机回执/状态使用 0x90+。
 typedef enum {
@@ -87,3 +89,8 @@ size_t proto_build_frame(uint8_t *buf, const proto_frame_t *frame);
 // 子板通信任务使用：
 void proto_write_frame(const proto_frame_t *frame);  // 实际写 Serial1
 void proto_on_event(const proto_frame_t *frame);     // 解析完成的事件分发
+
+// ---- 子板心跳（任何来自子板的帧都会刷新时间戳）----
+void proto_note_sub_rx(void);
+bool sub_comm_online(void);            // true = COMM_DEAD_TIMEOUT_MS 内有收到子板帧
+uint32_t sub_comm_last_rx_ms(void);    // 最近一次收到子板帧的 millis()

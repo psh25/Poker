@@ -239,14 +239,6 @@ void display_handle_command(const display_cmd_t *cmd) {
         draw_game_active(cmd);
         break;
 
-    case DISPLAY_CMD_CARD_PREVIEW:
-        tft.fillScreen(TFT_BLACK);
-        tft.setTextColor(TFT_WHITE, TFT_BLACK);
-        tft.setTextSize(1);
-        tft.setCursor(8, 60);
-        tft.print(cmd->payload.game.cardInfo);
-        break;
-
     case DISPLAY_CMD_ERROR:
         tft.fillScreen(TFT_RED);
         tft.setTextColor(TFT_WHITE, TFT_RED);

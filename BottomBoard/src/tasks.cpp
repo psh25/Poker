@@ -182,18 +182,19 @@ static void host_handle_frame(const proto_frame_t *frame) {
 static void sub_debug_print_help(void) {
     Serial.println("[CLI] help                         - 本帮助");
     Serial.println("[CLI] state                        - 打印当前状态机状态");
-    Serial.println("[CLI] deal                         - 启动发牌（模拟 IDLE 确认，配合 sim）");
+    Serial.println("[CLI] dealstart                    - 启动发牌（模拟 IDLE 确认，配合 sim）");
     Serial.println("[CLI] decks | dealinfo             - 打印牌堆预设 / 发牌进度与错误");
     Serial.println("[CLI] game list | game info        - 列出预置牌局 / 当前牌局的发牌组");
     Serial.println("[CLI] game use <1-8|name>          - 选择预置牌局（等同 select）");
     Serial.println("[CLI] game custom players=3 hand=17 public=0 bottom=3 - 自定义牌局");
     Serial.println("[CLI] stop | reset                  - 停机回 IDLE / 复位（含子板）");
     Serial.println("[CLI] confirm                       - 确认当前方案（两段式第一步）");
+    Serial.println("[CLI] subboard                      - 打印子板在线状态与心跳时间");
     Serial.println("[CLI] setstate <idle|dealing|active> - 强制切换状态（调试）");
     Serial.println("[CLI] sub <cmd> [hex data...]      - 底板→子板（自动组帧+CRC）");
-    Serial.println("[CLI]      cmd: deal|stop|status|selftest|reset 或 hex，如 sub 0x03");
+    Serial.println("[CLI]      cmd: dealstart|stop|statusquery|selftest|reset|camcapture 或 hex");
     Serial.println("[CLI] sim <type> [hex data...]     - 模拟子板→底板事件（喂给协议分发）");
-    Serial.println("[CLI]      type: ready|cardout|cardvalue|dealdone|jam|motorstall|camfail|ack 或 hex");
+    Serial.println("[CLI]      type: ready|cardout|cardvalue|dealdone|errorcardjam|errormotorstall|errorcamfail|ack|status");
     Serial.println("[CLI] simauto [on|off]             - 方案四自动模拟摄像头(0.5s)/光敏(默认 on)");
     Serial.println("[CLI] idle | select <n> | dealing <pct> - 底板屏幕测试");
 }
@@ -208,11 +209,13 @@ static bool sub_debug_hex_val(char c, uint8_t *v) {
 // 文本别名 / hex 解析为 type
 static bool sub_debug_lookup_type(const char *s, uint8_t *type) {
     struct { const char *name; uint8_t type; } map[] = {
-        {"deal", CMD_DEAL_START}, {"stop", CMD_STOP}, {"status", CMD_STATUS_QUERY},
-        {"selftest", CMD_SELF_TEST}, {"reset", CMD_RESET},
-    {"ready", EVT_READY}, {"cardout", EVT_CARD_OUT}, {"cardvalue", EVT_CARD_VALUE},
-    {"dealdone", EVT_DEAL_DONE}, {"jam", EVT_ERROR_CARD_JAM}, {"motorstall", EVT_ERROR_MOTOR_STALL},
-    {"camfail", EVT_ERROR_CAM_FAIL}, {"ack", EVT_ACK},
+        // 别名规则（两端统一）：枚举名去前缀(CMD_/EVT_) → 全小写 → 去下划线
+        {"dealstart", CMD_DEAL_START}, {"stop", CMD_STOP}, {"statusquery", CMD_STATUS_QUERY},
+        {"selftest", CMD_SELF_TEST}, {"reset", CMD_RESET}, {"camcapture", CMD_CAM_CAPTURE},
+        {"ready", EVT_READY}, {"cardout", EVT_CARD_OUT}, {"cardvalue", EVT_CARD_VALUE},
+        {"dealdone", EVT_DEAL_DONE},
+        {"errorcardjam", EVT_ERROR_CARD_JAM}, {"errormotorstall", EVT_ERROR_MOTOR_STALL},
+        {"errorcamfail", EVT_ERROR_CAM_FAIL}, {"ack", EVT_ACK}, {"status", EVT_STATUS},
     };
     for (const auto &m : map) {
         if (strcmp(s, m.name) == 0) { *type = m.type; return true; }
@@ -251,14 +254,24 @@ static void sub_debug_cli_process(const char *line) {
         return;
     }
 
-    // deal：模拟 IDLE 下 CONFIRM，启动发牌（配合 sim cardvalue / sim cardout 联调）
-    if (strcmp(line, "deal") == 0) {
+    // dealstart：模拟 IDLE 下 CONFIRM，启动发牌（配合 sim cardvalue / sim cardout 联调）
+    if (strcmp(line, "dealstart") == 0) {
         if (state_get_current() != STATE_IDLE) {
-            Serial.println("[CLI] deal: 仅 IDLE 状态可启动（先 setstate idle 或编码器重置）");
+            Serial.println("[CLI] dealstart: 仅 IDLE 状态可启动（先 setstate idle 或编码器重置）");
             return;
         }
         host_action_deal_start();
-        Serial.println("[CLI] deal started（0x01；流程：sim cardvalue <hex>... → sim cardout ...）");
+        Serial.println("[CLI] dealstart（0x01；流程：sim cardvalue <hex>... → sim cardout ...）");
+        return;
+    }
+
+    // subboard：子板心跳状态（在线/离线 + 距上次收到子板帧的毫秒数）
+    if (strcmp(line, "subboard") == 0) {
+        bool on = sub_comm_online();
+        uint32_t last = sub_comm_last_rx_ms();
+        Serial.printf("[CLI] subboard: %s (last rx %lu ms ago)\n",
+                      on ? "ONLINE" : "OFFLINE",
+                      (unsigned long)(millis() - last));
         return;
     }
 
@@ -276,7 +289,7 @@ static void sub_debug_cli_process(const char *line) {
     if (strcmp(line, "confirm") == 0) {
         host_action_confirm();
         if (state_get_current() == STATE_IDLE && display_get_confirmed()) {
-            Serial.println("[CLI] confirm（0x11）：方案已确认，再发 deal/0x01 开始发牌");
+            Serial.println("[CLI] confirm（0x11）：方案已确认，再发 dealstart/0x01 开始发牌");
         }
         return;
     }
@@ -690,27 +703,49 @@ void vDealTask(void *pv) {
         bool prev_out = true;   // 第一张无需确认上一张
         uint16_t dealt = 0;
 
-        // 按发牌计划逐组执行：转盘到位一次 → 连发 count 张 → 下一组
+        // 按发牌计划逐组执行；每张牌的时序（v2.6 摄像头流程）：
+        //   上一张成功 → 底板发截图命令 → 子板拉高 PIN_CAM_TRIG → 转盘到位
+        //   → 等待识别完成(EVT_CARD_VALUE) → 下发发牌 → 等待出牌成功(EVT_CARD_OUT)
         for (uint8_t gi = 0; gi < plan->groupCount && !s_deal_error_active; gi++) {
             const deal_group_t *g = &plan->groups[gi];
             s_deal_deck = g->deck;
             char status[24];
 
-            // 1) 转到本组对应的实体牌堆
-            snprintf(status, sizeof(status), "rotate %s", g->label);
-            deal_update_screen(status);
-            if (!rotate_to_deck(g->deck)) {
-                deal_add_error("chassis rotate timeout");
-                deal_fail();
-                break;
-            }
-
-            // 2) 从该牌堆连续发 count 张
             for (uint8_t k = 0; k < g->count && !s_deal_error_active; k++) {
                 proto_frame_t face;
                 deal_sim_t sim = {};
 
-                // 2.1 摄像头识别当前（即将发出的）牌面 → EVT_CARD_VALUE
+                // 1) 确认上一张牌成功发出（光敏 EVT_CARD_OUT），第一张跳过
+                if (!prev_out) {
+                    deal_update_screen("wait prev card out");
+                    if (simOn) { sim.type = EVT_CARD_OUT; sim.len = 0; sim.delayMs = SIM_PHOTO_DELAY_MS; }
+                    if (!deal_wait_evt_core(xSubboardRxQueue, EVT_CARD_OUT, PHOTO_TIMEOUT_MS, NULL,
+                                            simOn ? &sim : NULL)) {
+                        deal_add_error("prev card not out");
+                        deal_fail();
+                        break;
+                    }
+                    prev_out = true;
+                }
+
+                // 2) 底板 → 子板：截图指令（子板拉高 PIN_CAM_TRIG）
+                deal_update_screen("cam capture");
+                if (!proto_send(CMD_CAM_CAPTURE, NULL, 0)) {
+                    deal_add_error("tx queue full");
+                    deal_fail();
+                    break;
+                }
+
+                // 3) 转到本张牌对应的实体牌堆（同组后续张 delta=0，立即返回）
+                snprintf(status, sizeof(status), "rotate %s", g->label);
+                deal_update_screen(status);
+                if (!rotate_to_deck(g->deck)) {
+                    deal_add_error("chassis rotate timeout");
+                    deal_fail();
+                    break;
+                }
+
+                // 4) 等待识别完成 → EVT_CARD_VALUE
                 snprintf(status, sizeof(status), "%s face %u/%u",
                          g->label, (unsigned)k + 1, (unsigned)g->count);
                 deal_update_screen(status);
@@ -728,20 +763,7 @@ void vDealTask(void *pv) {
                     break;
                 }
 
-                // 2.2 确认上一张牌成功发出（光敏 EVT_CARD_OUT），或这是第一张
-                if (!prev_out) {
-                    deal_update_screen("wait prev card out");
-                    if (simOn) { sim.type = EVT_CARD_OUT; sim.len = 0; sim.delayMs = SIM_PHOTO_DELAY_MS; }
-                    if (!deal_wait_evt_core(xSubboardRxQueue, EVT_CARD_OUT, PHOTO_TIMEOUT_MS, NULL,
-                                            simOn ? &sim : NULL)) {
-                        deal_add_error("prev card not out");
-                        deal_fail();
-                        break;
-                    }
-                    prev_out = true;
-                }
-
-                // 2.3 下发子板发牌指令
+                // 5) 下发子板发牌指令
                 snprintf(status, sizeof(status), "deal %s %u/%u",
                          g->label, (unsigned)k + 1, (unsigned)g->count);
                 deal_update_screen(status);
@@ -751,7 +773,7 @@ void vDealTask(void *pv) {
                     break;
                 }
 
-                // 2.4 等待本张牌发出（光敏 EVT_CARD_OUT）
+                // 6) 等待本张牌发出（光敏 EVT_CARD_OUT）
                 if (simOn) { sim.type = EVT_CARD_OUT; sim.len = 0; sim.delayMs = SIM_PHOTO_DELAY_MS; }
                 if (!deal_wait_evt_core(xSubboardRxQueue, EVT_CARD_OUT, PHOTO_TIMEOUT_MS, NULL,
                                         simOn ? &sim : NULL)) {
@@ -761,7 +783,7 @@ void vDealTask(void *pv) {
                 }
                 prev_out = true;
 
-                // 2.5 保存牌面数据（摄像头识别结果）
+                // 7) 保存牌面数据（摄像头识别结果）
                 if (dealt < DEAL_TOTAL_CARDS_MAX) {
                     xSemaphoreTake(xDeckDataMutex, portMAX_DELAY);
                     if (haveFace) {
@@ -942,13 +964,28 @@ void vDisplayTask(void *pv) {
 void vMonitorTask(void *pv) {
     // 低(1) | 任意核心 | 定时器周期触发（500ms）
     TickType_t last = xTaskGetTickCount();
+    uint32_t lastHeartbeat = 0;
+    bool prevOnline = false;
     for (;;) {
         vTaskDelayUntil(&last, pdMS_TO_TICKS(MONITOR_PERIOD_MS));
         busy_monitor();
+
+        // ---- 子板心跳：周期发 CMD_STATUS_QUERY，子板回 EVT_STATUS ----
+        // 判定依据：COMM_DEAD_TIMEOUT_MS 内是否收到过任何来自子板的帧
+        uint32_t now = millis();
+        if ((uint32_t)(now - lastHeartbeat) >= (uint32_t)COMM_HEARTBEAT_MS) {
+            lastHeartbeat = now;
+            proto_send(CMD_STATUS_QUERY, NULL, 0);
+        }
+        bool online = sub_comm_online();
+        if (online != prevOnline) {
+            prevOnline = online;
+            Serial.printf("[MON] sub board %s\n", online ? "ONLINE" : "OFFLINE");
+        }
+
         // TODO:
-        //  - 读取 TMC 温度 / SG_RESULT，超阈值 → ENN 断电 + 屏幕告警（架构 v2 8.2）
-        //  - 每 COMM_HEARTBEAT_MS 发 CMD_STATUS_QUERY；超 COMM_DEAD_TIMEOUT_MS 判定掉线
         //  - LED：空闲灭 / 旋转亮 / 故障快闪
         //  - 霍尔 / INDEX 每圈失步校准
+        //  - 掉线时是否需要暂停发牌/屏幕告警，待与业务确认
     }
 }

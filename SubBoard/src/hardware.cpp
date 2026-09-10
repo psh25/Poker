@@ -3,6 +3,7 @@
  * 摄像头 / 光敏按 docs/subboard_architecture.md 后续实现。
  */
 #include <Arduino.h>
+#include <string.h>
 
 #include "pins_config.h"
 #include "app_config.h"
@@ -17,6 +18,7 @@
 
 // ---- 串口接收环形缓冲（架构第四章：中断写入，主循环解析）----
 static volatile uint8_t s_rx_ring[UART_RX_RING_SIZE];
+static void cam_uart_rx_isr(void);   // 摄像头回传串口中断（定义见下方“摄像头”一节）
 static volatile uint16_t s_rx_head = 0;   // 写入位置
 static volatile uint16_t s_rx_tail = 0;   // 读取位置
 
@@ -76,8 +78,12 @@ void sub_hardware_init(void) {
     // 光敏
     pinMode(PIN_PHOTO, INPUT_PULLUP);     // TODO: 按传感器电平配置
 
-    // 摄像头（占位）：新配置按 UART 预留（PIN_CAM_TX/RX/TRIG），
-    // 摄像头模组就绪后再初始化对应串口；当前不占用这些引脚。
+    // 摄像头：截图触发脚先初始化；识别接口（UART）待模组确定
+    pinMode(PIN_CAM_TRIG, OUTPUT);
+    digitalWrite(PIN_CAM_TRIG, LOW);
+    // 摄像头回传串口（只接收：摄像头 TX → PIN_CAM_RX；PIN_CAM_TX 备用）
+    Serial2.begin(CAM_UART_BAUD, SERIAL_8N1, PIN_CAM_RX, PIN_CAM_TX);
+    Serial2.onReceive(cam_uart_rx_isr);
 
     // 与底板通信串口（2 线 UART）
     Serial1.begin(SUB_UART_BAUD, SERIAL_8N1, SUB_UART_RX_PIN, SUB_UART_TX_PIN);
@@ -98,6 +104,135 @@ void sub_self_test(void) {
     // 自检：光敏电平、电机驱动、摄像头可初始化 → 上报 EVT_READY（架构第八章）
     busy_self_test();
     proto_send(EVT_READY, NULL, 0);
+}
+
+// ================= 摄像头：截图触发 + 回传接收 =================
+//
+// 工作方式：子板不主动取图，只负责“拉高 TRIG → 等摄像头把识别结果发回来”。
+//
+// 【回传帧格式（占位，模组确定后按手册改这一段即可）】
+//   byte0  帧头     0x5A
+//   byte1  类型     0x01 = 识别结果
+//   byte2  长度 n   data 字节数（n ≤ CARD_DATA_MAX）
+//   byte3.. 数据    识别结果载荷，约定牌面编码为 花色(1B) + 点数(1B)，其余待定
+//   末尾   校验     从 byte1 到 data 末字节的累加和低 8 位
+//   解析失败（帧头/长度/校验不符）→ 丢弃并重新找帧头
+//
+// 接收路径：Serial2 收到字节 → onReceive 中断写入环形缓冲 → 主循环 sub_camera_service() 解析。
+// 结果去向：解析成功后发 EVT_CARD_VALUE（data = 识别载荷）；超时未回传时按 CAM_EMPTY_ON_TIMEOUT 处理。
+
+#define CAM_FRAME_HEADER 0x5A
+#define CAM_TYPE_RESULT  0x01
+
+static volatile uint8_t  s_cam_ring[CAM_RX_RING_SIZE];
+static volatile uint16_t s_cam_head = 0;
+static volatile uint16_t s_cam_tail = 0;
+
+static void cam_ring_write(uint8_t b) {
+    uint16_t next = (s_cam_head + 1) % CAM_RX_RING_SIZE;
+    if (next == s_cam_tail) return;      // 满则丢弃
+    s_cam_ring[s_cam_head] = b;
+    s_cam_head = next;
+}
+
+static bool cam_ring_read(uint8_t *b) {
+    if (s_cam_tail == s_cam_head) return false;
+    *b = s_cam_ring[s_cam_tail];
+    s_cam_tail = (s_cam_tail + 1) % CAM_RX_RING_SIZE;
+    return true;
+}
+
+static void cam_uart_rx_isr(void) {
+    while (Serial2.available() > 0) {
+        cam_ring_write((uint8_t)Serial2.read());
+    }
+}
+
+// 截图会话状态：IDLE → PULSE（TRIG 高）→ WAIT（等回传）→ IDLE
+typedef enum { CAM_IDLE = 0, CAM_PULSE, CAM_WAIT } cam_session_t;
+static cam_session_t s_cam_state = CAM_IDLE;
+static uint32_t      s_cam_t0 = 0;
+static uint8_t       s_cam_payload[CARD_DATA_MAX];
+static uint8_t       s_cam_payload_len = 0;
+static bool          s_cam_got_result = false;
+
+void sub_camera_trigger(void) {
+    if (s_cam_state != CAM_IDLE) {
+        dbg_println("[CAM] trigger ignored (session busy)");
+        return;
+    }
+    s_cam_got_result = false;
+    s_cam_payload_len = 0;
+    s_cam_t0 = millis();
+    s_cam_state = CAM_PULSE;
+    digitalWrite(PIN_CAM_TRIG, HIGH);
+    dbg_println("[CAM] TRIG high");
+}
+
+// 解析环形缓冲中的一帧；成功则把载荷存入 s_cam_payload 并返回 true
+static bool cam_parse(void) {
+    uint8_t b;
+    while (cam_ring_read(&b)) {
+        if (b != CAM_FRAME_HEADER) continue;          // 找帧头
+        uint8_t type = 0, len = 0;
+        if (!cam_ring_read(&type)) return false;      // 帧不完整，等下次
+        if (!cam_ring_read(&len)) return false;
+        if (type != CAM_TYPE_RESULT || len == 0 || len > CARD_DATA_MAX) continue;
+        uint8_t data[CARD_DATA_MAX];
+        bool complete = true;
+        for (uint8_t i = 0; i < len; i++) {
+            if (!cam_ring_read(&data[i])) { complete = false; break; }
+        }
+        if (!complete) return false;
+        uint8_t sum = 0;
+        if (!cam_ring_read(&sum)) return false;
+        uint8_t calc = (uint8_t)(type + len);
+        for (uint8_t i = 0; i < len; i++) calc = (uint8_t)(calc + data[i]);
+        if (calc != sum) {
+            dbg_printf("[CAM] checksum mismatch (got 0x%02X want 0x%02X)\n", sum, calc);
+            continue;
+        }
+        memcpy(s_cam_payload, data, len);
+        s_cam_payload_len = len;
+        return true;
+    }
+    return false;
+}
+
+void sub_camera_service(void) {
+    uint32_t now = millis();
+    switch (s_cam_state) {
+    case CAM_IDLE:
+        break;
+
+    case CAM_PULSE:
+        if (now - s_cam_t0 >= CAM_TRIG_PULSE_MS) {
+            digitalWrite(PIN_CAM_TRIG, LOW);          // 摄像头检测上升沿，脉冲结束拉低
+            s_cam_state = CAM_WAIT;
+            s_cam_t0 = now;
+            dbg_println("[CAM] TRIG low, waiting result...");
+        }
+        break;
+
+    case CAM_WAIT:
+        if (!s_cam_got_result && cam_parse()) {
+            s_cam_got_result = true;
+            dbg_printf("[CAM] result len=%u\n", (unsigned)s_cam_payload_len);
+            proto_send(EVT_CARD_VALUE, s_cam_payload, s_cam_payload_len);
+            s_cam_state = CAM_IDLE;
+        } else if (now - s_cam_t0 >= CAM_RESULT_TIMEOUT_MS) {
+            // 摄像头未回传：保留“发空牌”调试路径，让整条流程还能跑通
+#if CAM_EMPTY_ON_TIMEOUT
+            dbg_println("[CAM] timeout, report EMPTY card (debug)");
+            proto_send(EVT_CARD_VALUE, NULL, 0);
+#else
+            dbg_println("[CAM] timeout, report CAM fail");
+            proto_send(EVT_ERROR_CAM_FAIL, NULL, 0);
+#endif
+            s_cam_state = CAM_IDLE;
+        }
+        break;
+    }
 }
 
 // ================= 发牌电机驱动（TB6612）=================
@@ -161,10 +296,6 @@ void busy_camera_capture(uint8_t *cardData, uint8_t *cardLen) {
 void busy_self_test(void) {
     // 上电自检：先让电机正/反转各抖一下，肉眼确认驱动链路正常
     motor_self_test();
-}
-
-void busy_status_query(void) {
-    // TODO: 回复状态（响应帧待协议定稿）
 }
 
 void busy_error_handle(uint8_t errorType) {

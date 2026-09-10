@@ -87,8 +87,12 @@ void sub_state_handle_command(uint8_t cmd, const uint8_t *data, uint8_t len) {
     case CMD_SELF_TEST:
         busy_self_test();
         break;
+    case CMD_CAM_CAPTURE:
+        sub_camera_trigger();         // 拉高 PIN_CAM_TRIG 触发截图
+        dbg_println("[SUB] CAM trigger");
+        break;
     case CMD_STATUS_QUERY:
-        busy_status_query();   // TODO: 回复状态事件（响应帧待协议定稿）
+        sub_status_report();   // 心跳应答（EVT_STATUS）
         break;
     default:
         break;
@@ -103,6 +107,20 @@ void sub_mark_error(uint8_t errorType) {
     proto_send(errorType, NULL, 0);
     sub_auto_deal_stop();             // 异常时取消自动发牌，等底板处理
     g_state = SUB_STATE_ERROR;
+}
+
+// 状态回执（心跳应答）：底板 CMD_STATUS_QUERY → 回 EVT_STATUS
+// data = [state, error, countLo, countHi]
+void sub_status_report(void) {
+    uint8_t d[4];
+    d[0] = (uint8_t)g_state;
+    d[1] = g_error;
+    d[2] = (uint8_t)(s_deal_count & 0xFF);
+    d[3] = (uint8_t)((s_deal_count >> 8) & 0xFF);
+    if (proto_send(EVT_STATUS, d, sizeof(d))) {
+        dbg_printf("[SUB] TX: STATUS state=%u error=%u count=%lu\n",
+                   (unsigned)d[0], (unsigned)d[1], (unsigned long)s_deal_count);
+    }
 }
 
 void sub_state_run(void) {
@@ -207,9 +225,8 @@ void sub_state_run(void) {
         break;
 
     case SUB_STATE_SEND_BACK:
-        // 单张结果实时回传：牌面值 + 流程完成（不缓存整副牌）
-        // 定时模式无摄像头：card 为空 → 底板按“未知牌”继续下一张
-        proto_send(EVT_CARD_VALUE, s_card_data, s_card_len);
+        // 单张流程完成回传。牌面值（EVT_CARD_VALUE）改由摄像头回传路径在
+        // “截图→识别”阶段发出（见 hardware.cpp sub_camera_service），此处不再重复发送。
         s_card_len = 0;
         proto_send(EVT_DEAL_DONE, NULL, 0);
         s_deal_count++;

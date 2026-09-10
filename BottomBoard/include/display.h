@@ -15,7 +15,6 @@ typedef enum {
     DISPLAY_CMD_SELECT,        // 高亮某个方案（含是否已确认）
     DISPLAY_CMD_DEALING,       // 发牌中（进度）
     DISPLAY_CMD_GAME_ACTIVE,   // 牌局进行中
-    DISPLAY_CMD_CARD_PREVIEW,  // 小程序选牌后预览
     DISPLAY_CMD_ERROR,         // 错误信息
     DISPLAY_CMD_DEBUG          // 调试提示（如“已选择/已取消”）
 } display_cmd_type_t;

@@ -1,8 +1,8 @@
 """OpenMV H7 Plus / firmware 5.x settings shared by both entry scripts.
 
-Copy this file and cards_fast_core.py beside both entry scripts on /flash.
+Copy this file and the matching core module beside both entry scripts on /flash.
 All coordinates are in the ORIGINAL QVGA frame. No card edges are required.
-Capture/recognition ROIs and their adaptive thresholds live in each entry script.
+Capture/recognition locator ROIs and thresholds live in each entry script.
 """
 
 # Select the template storage explicitly. Restart/reset OpenMV after changing

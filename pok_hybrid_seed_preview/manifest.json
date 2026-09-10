@@ -1,0 +1,217 @@
+{
+  "warning": "preview only; do not install as OpenMV templates",
+  "groups": {
+    "rank": {
+      "10": [
+        {
+          "file": "10_00.pgm",
+          "source": "10_club.bmp",
+          "centrality": 0.9616
+        },
+        {
+          "file": "10_01.pgm",
+          "source": "10_diamond.bmp",
+          "centrality": 0.9616
+        }
+      ],
+      "2": [
+        {
+          "file": "2_00.pgm",
+          "source": "2_club.bmp",
+          "centrality": 0.941
+        },
+        {
+          "file": "2_01.pgm",
+          "source": "2_spade.bmp",
+          "centrality": 0.9392
+        }
+      ],
+      "3": [
+        {
+          "file": "3_00.pgm",
+          "source": "3_club.bmp",
+          "centrality": 0.9413
+        },
+        {
+          "file": "3_01.pgm",
+          "source": "3_diamond.bmp",
+          "centrality": 0.9413
+        }
+      ],
+      "4": [
+        {
+          "file": "4_00.pgm",
+          "source": "4_heart.bmp",
+          "centrality": 0.7338
+        },
+        {
+          "file": "4_01.pgm",
+          "source": "4_diamond.bmp",
+          "centrality": 0.6501
+        }
+      ],
+      "5": [
+        {
+          "file": "5_00.pgm",
+          "source": "5_club.bmp",
+          "centrality": 0.9787
+        },
+        {
+          "file": "5_01.pgm",
+          "source": "5_spade.bmp",
+          "centrality": 0.9787
+        }
+      ],
+      "6": [
+        {
+          "file": "6_00.pgm",
+          "source": "6_heart.bmp",
+          "centrality": 0.9462
+        },
+        {
+          "file": "6_01.pgm",
+          "source": "6_spade.bmp",
+          "centrality": 0.9416
+        }
+      ],
+      "7": [
+        {
+          "file": "7_00.pgm",
+          "source": "7_club.bmp",
+          "centrality": 0.9544
+        },
+        {
+          "file": "7_01.pgm",
+          "source": "7_heart.bmp",
+          "centrality": 0.9544
+        }
+      ],
+      "8": [
+        {
+          "file": "8_00.pgm",
+          "source": "8_diamond.bmp",
+          "centrality": 0.8503
+        },
+        {
+          "file": "8_01.pgm",
+          "source": "8_spade.bmp",
+          "centrality": 0.8503
+        }
+      ],
+      "9": [
+        {
+          "file": "9_00.pgm",
+          "source": "9_heart.bmp",
+          "centrality": 0.7064
+        },
+        {
+          "file": "9_01.pgm",
+          "source": "9_spade.bmp",
+          "centrality": 0.7064
+        }
+      ],
+      "A": [
+        {
+          "file": "A_00.pgm",
+          "source": "A_club.bmp",
+          "centrality": 0.9747
+        },
+        {
+          "file": "A_01.pgm",
+          "source": "A_heart.bmp",
+          "centrality": 0.9747
+        }
+      ],
+      "J": [
+        {
+          "file": "J_00.pgm",
+          "source": "J_diamond.bmp",
+          "centrality": 0.9574
+        },
+        {
+          "file": "J_01.pgm",
+          "source": "J_heart.bmp",
+          "centrality": 0.9574
+        }
+      ],
+      "K": [
+        {
+          "file": "K_00.pgm",
+          "source": "K_diamond.bmp",
+          "centrality": 1.0
+        }
+      ],
+      "Q": [
+        {
+          "file": "Q_00.pgm",
+          "source": "Q_spade.bmp",
+          "centrality": 1.0
+        }
+      ]
+    },
+    "suit": {
+      "club": [
+        {
+          "file": "club_00.pgm",
+          "source": "5_club.bmp",
+          "centrality": 0.7463
+        },
+        {
+          "file": "club_01.pgm",
+          "source": "A_club.bmp",
+          "centrality": 0.6987
+        }
+      ],
+      "diamond": [
+        {
+          "file": "diamond_00.pgm",
+          "source": "8_diamond.bmp",
+          "centrality": 0.787
+        },
+        {
+          "file": "diamond_01.pgm",
+          "source": "2_diamond.bmp",
+          "centrality": 0.7851
+        }
+      ],
+      "heart": [
+        {
+          "file": "heart_00.pgm",
+          "source": "6_heart.bmp",
+          "centrality": 0.8651
+        },
+        {
+          "file": "heart_01.pgm",
+          "source": "9_heart.bmp",
+          "centrality": 0.8618
+        }
+      ],
+      "spade": [
+        {
+          "file": "spade_00.pgm",
+          "source": "5_spade.bmp",
+          "centrality": 0.9189
+        },
+        {
+          "file": "spade_01.pgm",
+          "source": "6_spade.bmp",
+          "centrality": 0.9049
+        }
+      ]
+    },
+    "joker": {
+      "joker": [
+        {
+          "file": "joker_00.pgm",
+          "source": "joker_big.bmp",
+          "centrality": 0.916
+        },
+        {
+          "file": "joker_01.pgm",
+          "source": "joker_small.bmp",
+          "centrality": 0.916
+        }
+      ]
+    }
+  }
+}

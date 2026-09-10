@@ -65,8 +65,22 @@ class HostImage:
         return types.SimpleNamespace(stdev=float(self.a.std()))
 
     def binary(self, thresholds):
-        lo, hi = thresholds[0]
-        self.a = ((self.a >= lo) & (self.a <= hi)).astype(np.uint8) * 255
+        if self.a.ndim == 3:
+            lab = cv2.cvtColor(self.a, cv2.COLOR_BGR2LAB).astype(np.float32)
+            lab[:, :, 0] *= 100.0 / 255
+            lab[:, :, 1:] -= 128
+            mask = np.zeros(self.a.shape[:2], np.uint8)
+            for threshold in thresholds:
+                selected = np.ones(self.a.shape[:2], np.uint8)
+                for k in range(3):
+                    selected &= ((lab[:, :, k] >= threshold[2*k])
+                                 & (lab[:, :, k] <= threshold[2*k+1]))
+                mask |= selected
+        else:
+            mask = np.zeros(self.a.shape, np.uint8)
+            for lo, hi in thresholds:
+                mask |= ((self.a >= lo) & (self.a <= hi))
+        self.a = mask.astype(np.uint8) * 255
         return self
 
     def mean(self, size, threshold=False, offset=0, invert=False, **kwargs):

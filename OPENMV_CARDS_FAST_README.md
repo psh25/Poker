@@ -21,8 +21,8 @@ PC 上的 `tests` 不需要上传，板上不需要 numpy、OpenCV 或 pytest。
 在 `cards_fast_config.py` 中选择模板存储介质：
 
 ```python
-USE_SD_CARD = True   # /sdcard/cards_fast_v2
-USE_SD_CARD = False  # /flash/cards_fast_v2，无需 SD 卡
+USE_SD_CARD = True   # /sdcard/cards_fast_v1
+USE_SD_CARD = False  # /flash/cards_fast_v1，无需 SD 卡
 ```
 
 修改后重置 OpenMV，保证采集和识别加载同一个配置。使用 SD 时会确认挂载
@@ -195,5 +195,5 @@ USB 还输出 `PROFILE` 和类别分数，UART 不输出这些调试数据。
 逐像素等价，也不代表 H7 Plus 的速度或实拍准确率。尚未连接 H7 Plus
 完成板上运行验证。固件接口参照 OpenMV v5.0.0 的 `modules/py_image.c`。
 
-本次自适应二值化升级使用新流水线版本和 `cards_fast_v2` 存储目录；原
-`cards_fast_v1` 模板不会被加载。请按本流程重采，旧目录可自行归档。
+采集与识别始终使用 `cards_fast_v1` 这一条存储路径。自适应二值化升级后
+旧模板不可继续使用；请先清空原模板目录，再按本流程重新采集。

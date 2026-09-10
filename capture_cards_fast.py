@@ -31,7 +31,7 @@ MAX_TEMPLATES_PER_LABEL = 4
 # do not have to equal the wider runtime search windows in recognize_cards_fast.py.
 CAPTURE_ROIS = {
     "rank": (80, 25, 110, 135),
-    "suit": (80, 120, 110, 110),
+    "suit": (80, 130, 110, 110),
     # Keep only the stable visible JOKER lettering, without the artwork.
     "joker": (100, 30, 70, 130),
     "back": (95, 45, 80, 120),
@@ -42,8 +42,8 @@ CAPTURE_ROIS = {
 # mean; a larger absolute value is stricter. Tune size/offset in this file.
 CAPTURE_VISION = {
     "rois": CAPTURE_ROIS,
-    "adaptive_size": {"rank": 5, "suit": 5, "joker": 5},  # 11x11 kernels
-    "adaptive_offset": {"rank": -8, "suit": -8, "joker": -8},
+    "adaptive_size": {"rank": 8, "suit": 8, "joker": 5},  # 11x11 kernels
+    "adaptive_offset": {"rank": -5, "suit": -5, "joker": -8},
     "adaptive_invert": True,
     "min_contrast": 24,
     "max_candidates": 2,

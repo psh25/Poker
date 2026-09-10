@@ -8,7 +8,7 @@ Capture/recognition ROIs and their adaptive thresholds live in each entry script
 # Select the template storage explicitly. Restart/reset OpenMV after changing
 # this value so every imported module uses the same path.
 USE_SD_CARD = True
-STORAGE_NAME = "cards_fast_v2"
+STORAGE_NAME = "cards_fast_v1"
 ROOT = ("/sdcard/" if USE_SD_CARD else "/flash/") + STORAGE_NAME
 MIN_SD_FREE_BYTES = 2 * 1024 * 1024
 MIN_FLASH_FREE_BYTES = 128 * 1024

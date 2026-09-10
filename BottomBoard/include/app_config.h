@@ -1,5 +1,6 @@
 #pragma once
 
+#include "deal_config.h"
 #include "pins_config.h"
 
 /**
@@ -39,23 +40,14 @@
 #define QUEUE_CAMERA_LEN   20   // 牌面识别结果
 #define QUEUE_DISPLAY_LEN  5    // 屏幕显示命令（事件驱动）
 
-// ================= 发牌方案（占位：方案 1~4，具体方案待定）=================
-#define SCHEME_COUNT        4
-// 方案三（索引 2）= 底盘连续旋转测试（不发牌）；方案四（索引 3）= TEST 发牌测试；方案 1~2 未定义
-#define SCHEME_ROTATE_TEST_INDEX  2
-#define SCHEME_TEST_INDEX         3
-#define ROTATE_TEST_TOPTURNS      10   // 方案三：顶层连续旋转圈数（电机步数按 33:10 齿轮比换算）
-
-// ================= 发牌模式预设（占位：模式未定，先定共同结构）=================
-#define DECK_COUNT          4     // 牌堆数量（占位）
-#define ROTATE_WAIT_MS      1500  // 步进电机到位后的稳定等待（ms；备用，实际旋转由 AccelStepper 完成）
-#define DEAL_TOTAL_CARDS    4     // 每局发牌总张数（占位）
+// ================= 发牌方案 / 牌堆 =================
+// 方案定义（预置游戏 + 自定义参数）见 deal_config.h：
+// 每种牌局只描述参数，发牌任务按生成好的“发牌组列表”统一执行。
+#define DECK_COUNT          8     // 实体牌堆位数量（转盘最多 8 个位置）
+#define ROTATE_WAIT_MS      1500  // 步进电机到位后的稳定等待（ms；备用）
 
 // 牌堆位置：顶层转盘目标角度（deg；电机实际转角 = ×33/10，见 CHASSIS_GEAR_*）
-static const int16_t kDeckAngles[DECK_COUNT] = { 0, 90, 180, 270 };
-
-// 每张牌的目标牌堆（按发牌顺序；占位：依次从 1→4 号牌堆各发一张）
-static const uint8_t kDealDeckSequence[DEAL_TOTAL_CARDS] = { 0, 1, 2, 3 };
+static const int16_t kDeckAngles[DECK_COUNT] = { 0, 45, 90, 135, 180, 225, 270, 315 };
 
 // ================= 时序 / 超时（ms）=================
 #define ENCODER_DEBOUNCE_MS    5     // 编码器消抖（架构 v2 异常处理 8.1）

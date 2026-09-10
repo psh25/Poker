@@ -80,7 +80,10 @@ state                               # 打印底板当前状态机状态
 sub <cmd> [hex data...]             # 底板 → 子板（自动组帧 + 自动算 CRC）
 sim <type> [hex data...]            # 模拟子板 → 底板事件（本地喂给协议分发）
 idle | select <n> | dealing <pct>   # 底板屏幕测试
-setstate <idle|dealing|active|end>  # 强制切换底板状态机（调试）
+setstate <idle|dealing|active>      # 强制切换底板状态机（调试）
+game list | game info               # 列出预置牌局 / 当前发牌计划
+game use <1-8|name>                 # 选择预置牌局（斗地主/掼蛋/升级/德州6人/桥牌/测试等）
+game custom players=N hand=N public=N bottom=N   # 自定义牌局参数
 ```
 
 - `cmd` / `type` 支持文本别名或 hex：
@@ -100,6 +103,8 @@ sub status      → 底板: [CLI] -> SUB type=0x03 ... sent
                   底板: [BOT] SUB-ACK: cmd=0x03
 sim cardout     → 底板模拟收到光敏事件，触发协议分发
 select 3        → 屏幕高亮方案 3
+game custom players=3 hand=17 public=0 bottom=3  → 生成斗地主式自定义计划并选中 Custom
+game info       → 打印当前计划的发牌组（牌堆/张数/标签）
 ```
 
 **子板串口（USB）**同样支持直接注入命令（模拟底板发来）：
@@ -161,7 +166,7 @@ help | deal | stop | status | selftest | reset | <hex type> [hex data...]
 | 0x03 | 状态查询（回 0x91） | 无 | `state` |
 | 0x04 | 触发子板自检（转发） | 无 | `sub selftest` |
 | 0x05 | 复位：发子板 `CMD_RESET` + 底板回 IDLE | 无 | `reset` |
-| 0x10 | 选择方案（仅 IDLE 有效） | [0]=0~3 | `select N` |
+| 0x10 | 选择方案（仅 IDLE 有效） | [0]=0~7 | `select N` / `game use N` |
 | 0x11 | 确认方案（两段式第一步） | 无 | `confirm` |
 
 ### 10.3 底板 → 主机事件
@@ -178,6 +183,8 @@ help | deal | stop | status | selftest | reset | <hex type> [hex data...]
 3. 远程发牌：写 `0x01`（随后底板向子板发 `CMD_DEAL_START`）；
 4. 远程停机/重置：写 `0x02` / `0x05`；
 5. 每次命令都会收到 `0x90` 回执；状态变化时收到 `0x91`。
+
+> 自定义牌局参数目前通过串口 `game custom ...` 下发；后续小程序实现时复用同一参数模型（新增一条主机命令帧即可，不需要改发牌逻辑）。
 
 > 注：0x01~0x05 与第 3 节“底板→子板命令”同号。区别只在于执行者：
 > 主机发到**底板**，底板执行对应底板级动作并自行决定是否转发子板；板间帧是**底板**发给**子板**。

@@ -11,6 +11,7 @@
 #include <TFT_eSPI.h>
 
 #include "app_config.h"
+#include "deal_config.h"
 #include "itc.h"
 #include "display.h"
 #include "hardware.h"
@@ -20,13 +21,7 @@ static TFT_eSPI tft;
 // 开机自检色块开关：确认屏幕与接线正常后可改为 0 去掉（白屏调试用）
 #define DISPLAY_DIAG_COLORS 1
 
-// 占位方案名：发牌方案 1~4（具体方案待定）
-static const char *kSchemeNames[SCHEME_COUNT] = {
-    "Deal Scheme 1",
-    "Deal Scheme 2",
-    "Deal Scheme 3",
-    "Deal Test",
-};
+// 方案名由 deal_config 统一提供（预置游戏 + Custom）
 
 static uint8_t g_selected = 0;   // 当前选中的方案索引
 
@@ -67,20 +62,40 @@ void display_init(void) {
 }
 
 static uint8_t s_drawn = 0;   // 当前屏幕上高亮的行
+static uint8_t s_menu_offset = 0;   // 菜单当前显示的首个方案索引（列表可滚动）
+#define MENU_ROWS 4                 // 横屏一屏显示 4 个方案
 // 当前屏幕布局类型：IDLE 屏旋转时需要同步刷新顶部 “Selected: N”
 enum { SCREEN_OTHER = 0, SCREEN_IDLE };
 static uint8_t s_screen = SCREEN_OTHER;
 
-// 画单行方案（选中项蓝底白字，未选中灰底浅字）
-static void draw_row(int i, uint8_t selectedIndex) {
-    uint16_t y = 13 + i * 19;      // 横屏：行高 16，行距 19，最多 4 行
-    uint16_t bg = (i == selectedIndex) ? TFT_BLUE : TFT_DARKGREY;
-    uint16_t fg = (i == selectedIndex) ? TFT_WHITE : TFT_LIGHTGREY;
+// 画一行方案（visualRow=屏幕第几行；schemeIndex=方案索引；选中项蓝底白字）
+static void draw_row(uint8_t visualRow, uint8_t schemeIndex, uint8_t selectedIndex) {
+    uint16_t y = 13 + visualRow * 19;   // 横屏：行高 16，行距 19，一屏 4 行
+    uint16_t bg = (schemeIndex == selectedIndex) ? TFT_BLUE : TFT_DARKGREY;
+    uint16_t fg = (schemeIndex == selectedIndex) ? TFT_WHITE : TFT_LIGHTGREY;
     tft.fillRoundRect(8, y, 144, 16, 3, bg);
     tft.setTextColor(fg, bg);
     tft.setCursor(14, y + 4);
     tft.setTextSize(1);
-    tft.print(kSchemeNames[i]);
+    tft.print(deal_scheme_name(schemeIndex));
+}
+
+// 保证选中项在可视窗口内，返回窗口首索引
+static uint8_t menu_offset_for(uint8_t selectedIndex) {
+    if (selectedIndex < s_menu_offset) return selectedIndex;
+    if (selectedIndex >= s_menu_offset + MENU_ROWS) {
+        return (uint8_t)(selectedIndex - MENU_ROWS + 1);
+    }
+    return s_menu_offset;
+}
+
+// 按当前窗口绘制可见的方案行
+static void draw_menu(uint8_t selectedIndex) {
+    for (uint8_t r = 0; r < MENU_ROWS; r++) {
+        uint8_t idx = (uint8_t)(s_menu_offset + r);
+        if (idx >= SCHEME_COUNT) break;
+        draw_row(r, idx, selectedIndex);
+    }
 }
 
 // IDLE 屏顶部：已确认显示 “Selected: N”，未确认显示 “Selected: -”
@@ -94,6 +109,14 @@ static void draw_idle_header(uint8_t selectedIndex, uint8_t confirmed) {
         tft.print(selectedIndex + 1);
     } else {
         tft.print("Selected: -");
+    }
+    // 方案多于 4 个时显示页码（如 1/2）
+    if (SCHEME_COUNT > MENU_ROWS) {
+        tft.setTextColor(TFT_CYAN, TFT_BLACK);
+        tft.setCursor(134, 2);
+        tft.print(s_menu_offset / MENU_ROWS + 1);
+        tft.print("/");
+        tft.print((SCHEME_COUNT + MENU_ROWS - 1) / MENU_ROWS);
     }
 }
 
@@ -114,12 +137,11 @@ static void draw_confirm_button(uint8_t confirmed) {
 static void draw_idle(uint8_t selectedIndex, uint8_t confirmed) {
     tft.fillScreen(TFT_BLACK);
 
+    s_menu_offset = menu_offset_for(selectedIndex);
     draw_idle_header(selectedIndex, confirmed);
     tft.drawFastHLine(8, 11, 144, TFT_WHITE);
 
-    for (int i = 0; i < SCHEME_COUNT; i++) {
-        draw_row(i, selectedIndex);
-    }
+    draw_menu(selectedIndex);
 
     draw_confirm_button(confirmed);
     s_drawn = selectedIndex;
@@ -128,13 +150,19 @@ static void draw_idle(uint8_t selectedIndex, uint8_t confirmed) {
 
 // 增量更新：顶部 + 确认按钮 + 高亮行（旋转 / 确认 / 取消时调用）
 static void draw_select(uint8_t selectedIndex, uint8_t confirmed) {
+    uint8_t newOffset = menu_offset_for(selectedIndex);
+    if (newOffset != s_menu_offset) {
+        s_menu_offset = newOffset;
+        draw_idle(selectedIndex, confirmed);   // 需要滚动 → 整屏重绘
+        return;
+    }
     if (s_screen == SCREEN_IDLE) {
         draw_idle_header(selectedIndex, confirmed);
         draw_confirm_button(confirmed);
     }
     if (selectedIndex != s_drawn) {
-        draw_row(s_drawn, selectedIndex);            // 旧行 → 灰
-        draw_row(selectedIndex, selectedIndex);      // 新行 → 蓝
+        draw_row((uint8_t)(s_drawn - s_menu_offset), s_drawn, selectedIndex);       // 旧行 → 灰
+        draw_row((uint8_t)(selectedIndex - s_menu_offset), selectedIndex, selectedIndex); // 新行 → 蓝
         s_drawn = selectedIndex;
     }
 }
@@ -146,7 +174,7 @@ static void draw_dealing(const display_cmd_t *cmd) {
     tft.setTextSize(1);
 
     tft.setCursor(8, 2);
-    tft.print(kSchemeNames[cmd->payload.dealing.scheme % SCHEME_COUNT]);
+    tft.print(deal_scheme_name(cmd->payload.dealing.scheme % SCHEME_COUNT));
 
     tft.setCursor(8, 12);
     tft.print("Deck: ");

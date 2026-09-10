@@ -8,14 +8,15 @@
  */
 
 // ===== 发牌电机：定时出牌模式参数（ms / PWM 占空比 0-255）=====
-#define MOTOR_FWD_MS 350   // 正转出牌时长：一张牌送出的时间
-#define MOTOR_REV_MS 500   // 出牌后反转回退时长（让下一张退到摄像头可拍位置；0=不反转）
+#define MOTOR_FWD_MS 390   // 正转出牌时长：一张牌送出的时间
+#define MOTOR_REV_MS 200   // 出牌后反转回退时长（让下一张退到摄像头可拍位置；0=不反转）
+#define MOTOR_BRAKE_MS 100 // 正转→反转之间的短刹车（AIN1=AIN2=高，PWM=0；0=直接换向）
 #define MOTOR_PAUSE_MS 100 // 每张牌之间的停顿（让牌完全出去、牌堆复位；0=不停）
-#define MOTOR_DUTY 250     // 正转 PWM 占空比（约 78%）
+#define MOTOR_DUTY 200     // 正转 PWM 占空比（约 78%）
 #define MOTOR_REV_DUTY 160 // 反转 PWM 占空比（约 63%）
 
 // 出牌触发方式：
-//   0 = 定时出牌（无光敏时调试用，推荐）：正转 MOTOR_FWD_MS → 反转 MOTOR_REV_MS → 停顿 → 回传完成
+//   0 = 定时出牌（无光敏时调试用，推荐）：正转 MOTOR_FWD_MS → 刹车 MOTOR_BRAKE_MS → 反转 MOTOR_REV_MS → 停顿 → 回传完成
 //   1 = 光敏触发（量产）：启动电机后等光敏检测到牌通过（PHOTO_TIMEOUT_MS 超时 = 卡牌）
 #define USE_PHOTO_SENSOR 0
 

@@ -21,6 +21,7 @@ bool sub_photo_take(void);
 // ---- 发牌电机（TB6612）----
 void busy_motor_start(void);        // 正转出牌（PWM = MOTOR_DUTY）
 void busy_motor_start_reverse(void);// 反转回退（PWM = MOTOR_REV_DUTY，摄像头拍牌底）
+void busy_motor_brake(void);        // 短刹车（AIN1=AIN2=高，PWM=0）
 void busy_motor_stop(void);         // 停止（滑行）
 void motor_self_test(void);         // 电机自检：正转/反转各 300ms（开机与 mtest 命令用）
 

@@ -20,7 +20,7 @@ DealerMachine/
 
 | 部件 | 所属板 | 说明 |
 |------|--------|------|
-| 底座转盘步进电机 | 底板 | TMC2209 驱动（STEP/DIR/ENN，电流由驱动板 VREF 电位器设定；不再使用单线 UART） |
+| 底座转盘步进电机 | 底板 | TMC2209 驱动（STEP/DIR/ENN，电流由驱动板 VREF 电位器设定）；转盘 8 个实体牌堆位 |
 | 屏幕 + SD 卡 | 底板 | ST7735 128×160 面板（1.8"，横屏使用，逻辑 160×128），与 SD 共用 SPI 总线（独立片选；SD 暂未接线） |
 | 旋转编码器 | 底板 | EC11：旋转选择/取消方案、短按确认方案/CONFIRM 发牌、GAME_ACTIVE 长按结束回 IDLE |
 | 霍尔零点传感器 | 底板 | A3144，两段式上电归零、运行中失步校准 |
@@ -43,6 +43,7 @@ DealerMachine/
 - **板间协议**：`0xA5 | type | len | data | crc8 | 0xAA`，掉线超时保护（详见 [board_protocol.md](docs/board_protocol.md)）。
 - **命令/事件命名**：命令统一 `CMD_*`，事件统一 `EVT_*`（错误事件为 `EVT_ERROR_*`）；CLI 别名 = 枚举名去前缀的小写（`status`、`dealdone`、`motorstall`）。
 - **状态机**：`IDLE → DEALING → GAME_ACTIVE`（选方案并入 IDLE：旋转切换/取消、短按确认方案、再按 CONFIRM 发牌；GAME_ACTIVE 长按编码器确认结束并直接回 IDLE），仅状态管理任务负责切换（单写者）。
+- **发牌方案参数化**：方案 = 预置参数（斗地主/掼蛋/升级/德州6人/桥牌/测试等）+ 串口自定义参数；发牌任务只执行“发牌组列表”（转到位→连发 N 张→下一堆），新增玩法不再写发牌逻辑，详见 `include/deal_config.h`。
 - **屏幕显示**：事件驱动（队列触发），非轮询，只展示不决策。
 
 ### 底板任务与优先级
@@ -65,6 +66,7 @@ DealerMachine/
 |------|------|
 | `include/pins_config.h` | IO 映射 |
 | `include/app_config.h` | 优先级、栈大小、队列容量、时序常量 |
+| `include/deal_config.h` / `src/deal_config.cpp` | 牌局参数预置表 + 自定义参数 → 发牌计划 |
 | `include/itc.h` / `src/itc.cpp` | 队列、信号量、互斥量、事件组创建 |
 | `src/tasks.cpp` | 7 个任务骨架 |
 | `src/display.cpp` / `include/display.h` | 屏幕显示（IDLE 屏：未选择/已选方案 + CONFIRM 按钮） |
@@ -91,6 +93,7 @@ DealerMachine/
 - [ ] （可选）恢复 TMC 单线 UART 电流控制（若启用需重新评估库与平台兼容性）
 - [ ] 霍尔两段式归零与失步校准
 - [x] 屏幕显示（ST7735 横屏 160×128：方案列表 + 两段式确认）
+- [x] 参数驱动自定义牌局（8 个牌堆位；预置斗地主/掼蛋/升级/德州6人/桥牌/测试 + Custom）
 - [ ] SD 卡驱动（SdFat，与屏幕共用 SPI 的片选互斥）
 - [x] 底板 CLI 调试（sub / sim / setstate / 屏幕测试）
 - [x] 底板 BLE 基础（NUS 收命令帧/发状态帧，帧格式与板间一致）

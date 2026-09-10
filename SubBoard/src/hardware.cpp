@@ -117,6 +117,14 @@ void busy_motor_start_reverse(void) {
     ledcWrite(MOTOR_PWM_CH, MOTOR_REV_DUTY);
 }
 
+void busy_motor_brake(void) {
+    // 短刹车：两端同高 + PWM=0，电机绕组短路制动，用于正转→反转过渡
+    digitalWrite(PIN_MOTOR_STBY, HIGH);
+    digitalWrite(PIN_MOTOR_AIN1, HIGH);
+    digitalWrite(PIN_MOTOR_AIN2, HIGH);
+    ledcWrite(MOTOR_PWM_CH, 0);
+}
+
 void busy_motor_stop(void) {
     // 停止：AIN1/2 全低 = 滑行（自然停）；如需立即停可改 AIN1/2 全高 = 短刹车
     digitalWrite(PIN_MOTOR_AIN1, LOW);
@@ -124,14 +132,17 @@ void busy_motor_stop(void) {
     ledcWrite(MOTOR_PWM_CH, 0);
 }
 
-// 电机自检：正转 300ms → 停 → 反转 300ms → 停（开机与 mtest 命令用）
+// 电机自检：正转 300ms → 刹车 MOTOR_BRAKE_MS → 反转 300ms → 停（开机与 mtest 命令用）
 // 如果电机完全不转，说明引脚 / 驱动供电 / 接线有问题
 void motor_self_test(void) {
     dbg_println("[MOT] self-test: forward 300ms...");
     busy_motor_start();
     delay(300);
-    busy_motor_stop();
-    delay(100);
+    if (MOTOR_BRAKE_MS > 0) {
+        dbg_println("[MOT] self-test: brake...");
+        busy_motor_brake();
+        delay(MOTOR_BRAKE_MS);
+    }
     dbg_println("[MOT] self-test: reverse 300ms...");
     busy_motor_start_reverse();
     delay(300);

@@ -5,7 +5,7 @@
 
 /**
  * 子板裸机状态机（docs/subboard_architecture.md 第三章）
- * 定时出牌（USE_PHOTO_SENSOR=0）：IDLE → MOTOR_ON → REVERSE → PAUSE → SEND_BACK → (自动下一张|IDLE)
+ * 定时出牌（USE_PHOTO_SENSOR=0）：IDLE → MOTOR_ON → BRAKE → REVERSE → PAUSE → SEND_BACK → (自动下一张|IDLE)
  * 光敏出牌（USE_PHOTO_SENSOR=1）：IDLE → MOTOR_ON → WAIT_CARD → CAM_CAPTURE → SEND_BACK → IDLE
  * 任意阶段异常 → ERROR（立即上报，等待底板 CMD_RESET / CMD_STOP 恢复）
  */
@@ -13,6 +13,7 @@
 typedef enum {
     SUB_STATE_IDLE = 0,
     SUB_STATE_MOTOR_ON,
+    SUB_STATE_BRAKE,            // 正转→反转之间的短刹车（防换向电流冲击）
     SUB_STATE_REVERSE,          // 出牌后反转回退（摄像头拍牌底）
     SUB_STATE_PAUSE,            // 定时模式：每张牌之间的停顿
     SUB_STATE_WAIT_CARD,

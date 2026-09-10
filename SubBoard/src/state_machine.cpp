@@ -126,12 +126,15 @@ void sub_state_run(void) {
         if (!USE_PHOTO_SENSOR) {
             // 定时出牌：正转 MOTOR_FWD_MS 后认为一张已出
             if (now - g_state_start_ms >= MOTOR_FWD_MS) {
-                busy_motor_stop();
                 proto_send(EVT_CARD_OUT, NULL, 0);   // 实时上报：已出一张
-                if (MOTOR_REV_MS > 0) {
-                    busy_motor_start_reverse();       // 出牌后反转回退（摄像头拍牌底）
+                if (MOTOR_BRAKE_MS > 0) {
+                    busy_motor_brake();               // 先短刹车，缓解换向冲击
+                    g_state = SUB_STATE_BRAKE;
+                } else if (MOTOR_REV_MS > 0) {
+                    busy_motor_start_reverse();
                     g_state = SUB_STATE_REVERSE;
                 } else {
+                    busy_motor_stop();
                     g_state = SUB_STATE_PAUSE;
                 }
                 g_state_start_ms = now;
@@ -143,6 +146,21 @@ void sub_state_run(void) {
                 g_state_start_ms = now;
             }
             // TODO: 电流检测 → 堵转立即 sub_mark_error(EVT_ERROR_MOTOR_STALL)
+        }
+        break;
+
+    case SUB_STATE_BRAKE:
+        // 保持短刹车，再进入反转（或直接进入停顿）
+        busy_motor_brake();
+        if (now - g_state_start_ms >= MOTOR_BRAKE_MS) {
+            if (MOTOR_REV_MS > 0) {
+                busy_motor_start_reverse();
+                g_state = SUB_STATE_REVERSE;
+            } else {
+                busy_motor_stop();
+                g_state = SUB_STATE_PAUSE;
+            }
+            g_state_start_ms = now;
         }
         break;
 
@@ -195,8 +213,8 @@ void sub_state_run(void) {
         s_card_len = 0;
         proto_send(EVT_DEAL_DONE, NULL, 0);
         s_deal_count++;
-        dbg_printf("[SUB] card #%lu out (fwd=%dms rev=%dms)\n",
-                   (unsigned long)s_deal_count, MOTOR_FWD_MS, MOTOR_REV_MS);
+        dbg_printf("[SUB] card #%lu out (fwd=%dms brake=%dms rev=%dms)\n",
+                   (unsigned long)s_deal_count, MOTOR_FWD_MS, MOTOR_BRAKE_MS, MOTOR_REV_MS);
 
         if (s_auto_active) {
             // 自动发牌：直接开始下一张

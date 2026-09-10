@@ -8,6 +8,8 @@ v1.1（2026-08-30）修订：创建 `SubBoard/` PlatformIO 项目；实现串口
 
 v1.2（2026-09-08）修订：引脚按最新版 `include/pins_config.h` 更新（板间 UART 改 POS/NEG，电机/光敏/摄像头引脚更新）；移除 RGB LED 调试指示，链路观察改为串口日志。
 
+v1.3（2026-09-10）修订：定时出牌在正转与反转之间新增 BRAKE（短刹车）状态，缓解换向电流冲击；对应新增 `MOTOR_BRAKE_MS` 与 `busy_motor_brake()`。
+
 ## 一、职责定位
 
 子板是**“带反馈的执行器”**，不是决策者：
@@ -52,6 +54,7 @@ v1.2（2026-09-08）修订：引脚按最新版 `include/pins_config.h` 更新�
 |------|------|------------|
 | IDLE | 空闲，等待底板命令 | 解析串口命令、查询状态、自检 |
 | MOTOR_ON | 发牌电机启动中 | 启动电机，启动 500ms 超时计时 |
+| BRAKE | 正转→反转过渡 | 短刹车 `MOTOR_BRAKE_MS`（AIN1=AIN2=高，PWM=0；定时模式） |
 | WAIT_CARD | 等待光敏检测到牌 | 等待光敏中断标志；超时进入 ERROR |
 | CAM_CAPTURE | 摄像头拍照 + 识别 | 触发拍照、读取图像、识别牌面（含 2s 超时） |
 | SEND_BACK | 打包回传底板 | 组装事件帧发送，完成后回到 IDLE |
@@ -73,12 +76,18 @@ stateDiagram-v2
     MOTOR_ON --> ERROR : 堵转电流检测（如有）
 ```
 
+> 定时模式（`USE_PHOTO_SENSOR=0`）在 `MOTOR_ON` 之后插入刹车与回退：
+> `MOTOR_ON → BRAKE → REVERSE → PAUSE → SEND_BACK`，其中 `MOTOR_BRAKE_MS=0` 时跳过 BRAKE。
+
 ### 3.3 转移条件与动作表
 
 | 转移 | 触发条件 | 动作 |
 |------|----------|------|
 | IDLE → MOTOR_ON | 收到 `CMD_DEAL_START` | 启动发牌电机；启动 500ms 超时定时器 |
 | MOTOR_ON → WAIT_CARD | 电机启动完成 | 等待光敏触发 |
+| MOTOR_ON → BRAKE | 定时模式正转结束 | 上报 `EVT_CARD_OUT`；短刹车 `MOTOR_BRAKE_MS` |
+| BRAKE → REVERSE | 刹车结束且 `MOTOR_REV_MS>0` | 启动反转回退 |
+| BRAKE → PAUSE | 刹车结束且 `MOTOR_REV_MS=0` | 停止电机，进入停顿 |
 | WAIT_CARD → CAM_CAPTURE | 光敏中断标志置位 | 停止电机；触发摄像头拍照 |
 | WAIT_CARD → ERROR | 500ms 未检测到牌 | 停止电机；上报 `EVT_ERROR_CARD_JAM` |
 | CAM_CAPTURE → SEND_BACK | 识别完成 | 组装 `EVT_CARD_VALUE`（含未知牌标志） |
@@ -171,6 +180,8 @@ stateDiagram-v2
 ## 九、主循环伪代码框架
 
 ```cpp
+// 注：定时模式另有 BRAKE / REVERSE / PAUSE 状态，顺序为
+//     MOTOR_ON → BRAKE → REVERSE → PAUSE → SEND_BACK（见 3.1/3.3）。
 enum { STATE_IDLE, STATE_MOTOR_ON, STATE_WAIT_CARD,
        STATE_CAM_CAPTURE, STATE_SEND_BACK, STATE_ERROR } state;
 

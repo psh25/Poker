@@ -131,8 +131,8 @@ void setup() {
     sub_hardware_init();          // 1. GPIO / UART / 中断
     sub_self_test();              // 2. 自检 → EVT_READY
     // 2.5 打印当前配置：改完参数烧进去后，先看这一行对不对
-    dbg_printf("[SUB] config: fwd=%dms rev=%dms pause=%dms duty=%d/%d auto=%s photo=%s\n",
-               MOTOR_FWD_MS, MOTOR_REV_MS, MOTOR_PAUSE_MS,
+    dbg_printf("[SUB] config: fwd=%dms brake=%dms rev=%dms pause=%dms duty=%d/%d auto=%s photo=%s\n",
+               MOTOR_FWD_MS, MOTOR_BRAKE_MS, MOTOR_REV_MS, MOTOR_PAUSE_MS,
                MOTOR_DUTY, MOTOR_REV_DUTY,
                AUTO_DEAL_ENABLE ? "ON" : "OFF",
                USE_PHOTO_SENSOR ? "ON" : "OFF");

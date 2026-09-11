@@ -57,3 +57,42 @@ def test_recognizer_has_no_recapture_and_unique_template_limit():
     assert Recognize.MAX_ATTEMPTS == 1
     assert Recognize.MAX_TEMPLATES_PER_LABEL == 2
     assert Recognize.COARSE_ANGLES == (0,)
+
+
+def test_difference_score_is_bounded_and_orders_matches():
+    V, unused_capture, unused_recognize = load_modules()
+    exact = HostImage(np.array([[0, 255], [255, 0]], dtype=np.uint8))
+    near = HostImage(np.array([[0, 255], [0, 0]], dtype=np.uint8))
+    opposite = HostImage(np.array([[255, 0], [0, 255]], dtype=np.uint8))
+    assert V.difference_score(exact, exact) == 1.0
+    assert 0.0 <= V.difference_score(exact, opposite) <= 1.0
+    assert V.difference_score(exact, near) > V.difference_score(exact, opposite)
+
+
+def test_plausible_face_suppresses_single_template_back(monkeypatch):
+    V, unused_capture, Recognize = load_modules()
+    monkeypatch.setattr(V, "color_evidence",
+                        lambda unused_image, unused_box, unused_settings:
+                        {"color": "red", "red": 100, "black": 0})
+    records = {
+        "rank": {
+            "K": {"label": "K", "score": 0.94, "box": (140, 60, 40, 70)},
+            "Q": {"label": "Q", "score": 0.80, "box": (140, 60, 40, 70)},
+        },
+        "suit": {
+            "heart": {"label": "heart", "score": 0.91, "box": (145, 165, 45, 55)},
+            # Insufficient margin makes the face ambiguous, but it remains
+            # stronger evidence of a front than the single-label back match.
+            "diamond": {"label": "diamond", "score": 0.90, "box": (145, 165, 45, 55)},
+        },
+        "joker": {},
+        "back": {"back": {"label": "back", "score": 0.99,
+                              "box": (160, 120, 40, 40)}},
+    }
+    result = V.decide(records, object(), Recognize.RECOGNITION_VISION)
+    result["diagnostics"] = {"layout_pairs": 1}
+    assert result["label"] == "UNKNOWN"
+    assert "SUIT_MARGIN=heart" in Recognize.unknown_detail(result)
+    info = Recognize.result_info(result)
+    assert "R:K,0.940,0.140,1" in info
+    assert "S:heart,0.910,0.010,0" in info

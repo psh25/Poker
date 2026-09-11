@@ -20,6 +20,8 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_cards_fast import HostImage
 
+V = None  # Set by main() after the OpenMV host shim has been installed.
+
 
 def install_host_api():
     sys.modules["image"] = types.SimpleNamespace(Image=HostImage, GRAYSCALE=0, AREA=0)
@@ -56,7 +58,7 @@ def best_other(patch, samples, source, limit=2):
         by_label.setdefault(sample["label"], []).append(sample)
     scores = []
     for label, choices in by_label.items():
-        score = max(float(patch.get_similarity(item["patch"]).mean)
+        score = max(V.difference_score(patch, item["patch"])
                     for item in choices[:limit])
         scores.append((score, label))
     scores.sort(reverse=True)
@@ -82,7 +84,7 @@ def save_seed_preview(samples, destination):
             ranked = []
             for item in choices:
                 peers = [other for other in choices if other is not item]
-                centrality = (sum(float(item["patch"].get_similarity(peer["patch"]).mean)
+                centrality = (sum(V.difference_score(item["patch"], peer["patch"])
                                   for peer in peers) / len(peers)) if peers else 1.0
                 ranked.append((centrality, item))
             ranked.sort(key=lambda pair: pair[0], reverse=True)
@@ -99,9 +101,11 @@ def save_seed_preview(samples, destination):
 
 
 def main():
+    global V
     install_host_api()
     import cards_fast_config as C
-    import cards_hybrid_core as V
+    import cards_hybrid_core as core
+    V = core
     import capture_cards_hybrid as Capture
     importlib.reload(V)
     importlib.reload(Capture)
@@ -199,8 +203,8 @@ def main():
         for r in joker_rows if r["located"])
     joker_similarity = None
     if len(samples["joker"]) == 2:
-        joker_similarity = round(float(samples["joker"][0]["patch"].get_similarity(
-            samples["joker"][1]["patch"]).mean), 4)
+        joker_similarity = round(V.difference_score(samples["joker"][0]["patch"],
+                                                     samples["joker"][1]["patch"]), 4)
 
     normals = [r for r in rows if r["kind"] == "normal"]
     jokers = [r for r in rows if r["kind"] == "joker"]

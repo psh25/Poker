@@ -61,8 +61,13 @@ class HostImage:
     def get_histogram(self):
         return Histogram(self.a)
 
-    def get_statistics(self):
-        return types.SimpleNamespace(stdev=float(self.a.std()))
+    def get_statistics(self, difference=None):
+        if difference is None:
+            return types.SimpleNamespace(mean=float(self.a.mean()),
+                                         stdev=float(self.a.std()))
+        delta = np.abs(self.a.astype(np.int16) - difference.a.astype(np.int16))
+        return types.SimpleNamespace(mean=float(delta.mean()),
+                                     stdev=float(delta.std()))
 
     def binary(self, thresholds):
         if self.a.ndim == 3:

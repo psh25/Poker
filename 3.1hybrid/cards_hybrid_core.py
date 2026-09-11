@@ -1,7 +1,8 @@
 """Hybrid LAB locator + local-Otsu template pipeline for OpenMV H7 Plus.
 
 Only connected-component metadata is processed in Python. Pixel operations,
-rotation, resizing, histogram, and SSIM are OpenMV native operations.
+rotation, resizing, histogram, and image-difference statistics are OpenMV
+native operations.
 """
 import gc
 import json
@@ -199,7 +200,10 @@ def start_camera(calibrate=False):
         os.sync()
     # Force API availability checks before collecting a template bank.
     probe = image.Image(16, 16, image.GRAYSCALE)
-    probe.get_similarity(probe)
+    # The firmware SSIM implementation can return values outside [-1, 1] for
+    # these patch heights.  Use the native absolute-difference statistic
+    # instead and verify that API here before loading a template bank.
+    probe.get_statistics(difference=probe)
     probe.rotation_corr(z_rotation=0)
     return cam, settings, leds
 
@@ -323,6 +327,7 @@ def locate(color_img, group, settings, threshold_offset_delta=0, budget=None):
         candidates.append({"box": (rx + x, ry + y, w, h),
                            "pixels": pixels, "density": density})
     candidates.sort(key=lambda c: c["pixels"], reverse=True)
+    info["valid_candidates"] = len(candidates)
     info["rejected"] = rejected
     info["reason"] = "OK" if candidates else "NO_COMPLETE_SYMBOL"
     return candidates[:int(settings["max_candidates"])], info
@@ -492,13 +497,29 @@ def load_bank(camera_settings, strict_coverage=False, max_templates_per_label=No
     return bank
 
 
+def difference_score(patch, template):
+    """Return bounded similarity derived from native mean absolute error.
+
+    OpenMV's ``get_statistics(difference=...)`` performs the pixel difference
+    in C without allocating another image.  All inputs have identical sizes.
+    A perfect match is 1 and a full-scale difference is 0.
+    """
+    difference = float(attr(patch.get_statistics(difference=template), "mean"))
+    if not math.isfinite(difference):
+        return None
+    score = 1.0 - difference / 255.0
+    # Integer grayscale differences are mathematically in [0, 255].  Clamp
+    # only harmless floating-point roundoff so confidence is always bounded.
+    return max(0.0, min(1.0, score))
+
+
 def score_patch(patch, catalogue, records, box, angle, budget=None):
     if patch is None:
         return
     for label, template, name in catalogue:
         check(budget)
-        score = float(attr(patch.get_similarity(template), "mean"))
-        if not math.isfinite(score):
+        score = difference_score(patch, template)
+        if score is None:
             continue
         old = records.get(label)
         if old is None or score > old["score"]:
@@ -511,7 +532,9 @@ def best_group(records, group, decision):
     if not ordered:
         return {"accepted": False, "score": -1.0, "label": None, "margin": 0.0}
     best = dict(ordered[0])
-    second = ordered[1]["score"] if len(ordered) > 1 else -1.0
+    # Joker and back each have one class, so no meaningful runner-up exists.
+    # Report a zero margin instead of score - (-1), which produced values > 1.
+    second = ordered[1]["score"] if len(ordered) > 1 else best["score"]
     best["margin"] = best["score"] - second
     best["accepted"] = (best["score"] >= decision["accept_score"][group]
                         and best["margin"] >= decision["accept_margin"][group])
@@ -522,25 +545,37 @@ def decide(records, color_img, decision):
     groups = {k: best_group(records[k], k, decision) for k in records}
     rank, suit, joker, back = (groups[k] for k in ("rank", "suit", "joker", "back"))
     scenes = []
-    if rank["accepted"] and suit["accepted"] and geometry_ok(
-            rank["box"], suit["box"], decision):
+    normal_plausible = False
+    normal_geometry = (rank.get("label") is not None and suit.get("label") is not None
+                       and geometry_ok(rank["box"], suit["box"], decision))
+    if (normal_geometry
+            and rank["score"] >= decision["accept_score"]["rank"]
+            and suit["score"] >= decision["accept_score"]["suit"]):
         evidence = color_evidence(color_img, suit["box"], decision)
         expected = "red" if suit["label"] in ("heart", "diamond") else "black"
         suit["color"] = evidence
         # Uncertain color does not exclude shape candidates. Explicit conflict
         # does reject a result; all 4 suits were scored before this check.
         if evidence["color"] in (None, expected):
-            scenes.append((min(rank["score"] - decision["accept_score"]["rank"],
-                               suit["score"] - decision["accept_score"]["suit"]),
-                           suit["label"] + "_" + rank["label"]))
+            normal_plausible = True
+    if normal_plausible and rank["accepted"] and suit["accepted"]:
+        scenes.append((min(rank["score"] - decision["accept_score"]["rank"],
+                           suit["score"] - decision["accept_score"]["suit"]),
+                       suit["label"] + "_" + rank["label"]))
+    joker_plausible = False
     if joker["accepted"]:
         evidence = color_evidence(color_img, joker["box"], decision)
         joker["color"] = evidence
         if evidence["color"] is not None:
+            joker_plausible = True
             label = (decision["red_joker_label"] if evidence["color"] == "red"
                      else decision["black_joker_label"])
             scenes.append((joker["score"] - decision["accept_score"]["joker"], label))
-    if back["accepted"]:
+    # Back is a grayscale, single-label fallback. A face with plausible rank
+    # and suit evidence must not be overwritten merely because the fixed back
+    # ROI happens to resemble the back template. If its margin is insufficient,
+    # return UNKNOWN and report that ambiguity instead.
+    if back["accepted"] and not normal_plausible and not joker_plausible:
         scenes.append((back["score"] - decision["accept_score"]["back"], "back"))
     scenes.sort(reverse=True)
     label, reason = "UNKNOWN", "LOW_SCORE_OR_GEOMETRY_OR_COLOR"

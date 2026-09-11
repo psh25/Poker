@@ -1,15 +1,15 @@
 """OpenMV H7 Plus triggered card recognition, no CNN, no no-card class.
 
-Deploy with cards_hybrid_core.py, cards_fast_config.py and newly captured bank.
-P9 falling edge: fresh capture -> native SSIM -> same-frame refinement -> at
-most one retry. UART3 P4 TX / P5 RX, 115200 8N1: RESULT:<label>\r\n.
-UNKNOWN means insufficient evidence, NEVER "no card". Diagnostics use USB.
+Deploy with cards_hybrid_core.py, cards_fast_config.py and a matching hybrid bank.
+P9 falling edge: fresh capture -> native pixel difference -> same-frame refinement -> at
+most one retry. Results and diagnostics are printed through the USB IDE
+terminal. UNKNOWN means insufficient evidence, NEVER "no card".
 The 900 ms deadline is cooperative: an individual native call cannot be
 interrupted. Measure PROFILE total_ms on the actual H7 Plus before acceptance.
 """
 import gc
 import time
-from machine import Pin, UART
+from machine import Pin
 import cards_fast_config as C
 import cards_hybrid_core as V
 
@@ -17,10 +17,10 @@ import cards_hybrid_core as V
 # Wider than capture ROIs so the complete symbols remain visible throughout
 # the measured mechanical displacement range.
 RECOGNITION_ROIS = {
-    "rank": (100, 25, 100, 155),
-    "suit": (100, 130, 100, 110),
+    "rank": (105, 25, 100, 155),
+    "suit": (105, 130, 100, 110),
     "joker": (110, 25, 80, 150),
-    "back": (160, 120, 40, 40),
+    "back": (170, 120, 40, 40),
 }
 
 COARSE_ANGLES = (0,)
@@ -51,7 +51,10 @@ RECOGNITION_VISION = {
     "refine_angles": REFINE_ANGLES,
     "back_refine_offsets": BACK_REFINE_OFFSETS,
     "accept_score": {"rank": 0.80, "suit": 0.80, "joker": 0.84, "back": 0.86},
-    "accept_margin": {"rank": 0.05, "suit": 0.05, "joker": 0.0, "back": 0.0},
+    # Current screenshot validation separates the closest wrong suit (0.022)
+    # from the weakest correct suit (0.028). Recalibrate from raw trigger
+    # frames after accumulating a larger hardware validation set.
+    "accept_margin": {"rank": 0.05, "suit": 0.015, "joker": 0.0, "back": 0.0},
     "scene_margin": 0.035,
     "red_joker_label": "joker_big",
     "black_joker_label": "joker_small",
@@ -59,17 +62,15 @@ RECOGNITION_VISION = {
 
 STRICT_TEMPLATE_COVERAGE = True
 MAX_TEMPLATES_PER_LABEL = 2
-UART_ENABLED = True
-UART_ID = 3  # H7 Plus P4=TX, P5=RX; common GND with receiver.
-UART_BAUD = 115200
-UART_TIMEOUT_MS = 25
+REASON_MAX_CHARS = 240
+INFO_MAX_CHARS = 160
 RESULT_BUDGET_MS = 900
-OUTPUT_RESERVE_MS = 35
+OUTPUT_RESERVE_MS = 15
 MAX_ATTEMPTS = 1  # Current requirement: no recapture; failure emits UNKNOWN.
 RETRY_SETTLE_MS = 20
 DISCARD_AFTER_TRIGGER = 1
 PRINT_PROFILE = True
-DEBUG_DRAW_TRIGGER_FRAME = True  # Draw only after UART output/timing completes.
+DEBUG_DRAW_TRIGGER_FRAME = True  # Draw only after USB result/timing completes.
 DEBUG_ROI_COLORS = {
     "rank": (255, 0, 0),
     "suit": (0, 0, 255),
@@ -81,35 +82,105 @@ DEBUG_ACCEPTED_COLOR = (0, 255, 0)
 # --------------------------------------------------------------------------------
 
 
-def send_result(uart, label):
-    payload = ("RESULT:" + label + "\r\n").encode()
-    if uart is None:
-        print(payload.decode().strip())
-        return
-    start = time.ticks_ms()
-    sent = 0
-    while sent < len(payload):
-        count = uart.write(payload[sent:])
-        if count:
-            sent += count
-        if time.ticks_diff(time.ticks_ms(), start) >= UART_TIMEOUT_MS:
-            raise OSError("UART write timeout")
-        if not count:
-            time.sleep_ms(1)
-    # txdone means the final byte has actually left the UART, not only queued.
-    while not uart.txdone():
-        if time.ticks_diff(time.ticks_ms(), start) >= UART_TIMEOUT_MS:
-            raise OSError("UART drain timeout")
-        time.sleep_ms(1)
+def _group_failure(group, info):
+    """Return one compact, machine-readable rejection item."""
+    label = info.get("label")
+    if label is None:
+        return group.upper() + "_NO_MATCH"
+    score = info.get("score", -1.0)
+    score_limit = RECOGNITION_VISION["accept_score"][group]
+    if score < score_limit:
+        return "%s_SCORE=%s,%.3f<%.3f" % (
+            group.upper(), label, score, score_limit)
+    margin = info.get("margin", 0.0)
+    margin_limit = RECOGNITION_VISION["accept_margin"][group]
+    if margin < margin_limit:
+        return "%s_MARGIN=%s,%.3f<%.3f" % (
+            group.upper(), label, margin, margin_limit)
+    return None
+
+
+def unknown_detail(result):
+    """Explain why no class passed without dumping a large Python dict."""
+    reason = result.get("reason", "UNKNOWN")
+    if reason in ("TIMEOUT", "RETRY_BUDGET_EXHAUSTED", "NO_RESULT"):
+        return reason
+
+    groups = result.get("groups", {})
+    diagnostics = result.get("diagnostics", {})
+    parts = []
+    layout_pairs = diagnostics.get("layout_pairs")
+    if (layout_pairs == 0
+            and (groups.get("rank", {}).get("label") is None
+                 or groups.get("suit", {}).get("label") is None)):
+        rank_count = diagnostics.get("rank", {}).get("valid_candidates", 0)
+        suit_count = diagnostics.get("suit", {}).get("valid_candidates", 0)
+        parts.append("NO_LAYOUT=r%d,s%d" % (rank_count, suit_count))
+
+    for group in ("rank", "suit", "joker", "back"):
+        info = groups.get(group, {})
+        item = _group_failure(group, info)
+        if item is not None:
+            if info.get("label") is None and group in diagnostics:
+                locate_reason = diagnostics[group].get("reason")
+                if locate_reason and locate_reason != "OK":
+                    item += ":" + locate_reason
+            parts.append(item)
+
+    rank, suit = groups.get("rank", {}), groups.get("suit", {})
+    if (rank.get("accepted") and suit.get("accepted")
+            and rank.get("box") is not None and suit.get("box") is not None):
+        if not V.geometry_ok(rank["box"], suit["box"], RECOGNITION_VISION):
+            parts.append("NORMAL_GEOMETRY")
+        else:
+            evidence = suit.get("color", {}).get("color")
+            expected = ("red" if suit.get("label") in ("heart", "diamond")
+                        else "black")
+            if evidence is not None and evidence != expected:
+                parts.append("SUIT_COLOR=%s!=%s" % (evidence, expected))
+
+    joker = groups.get("joker", {})
+    if joker.get("accepted") and joker.get("color", {}).get("color") is None:
+        parts.append("JOKER_COLOR_NONE")
+    if reason == "SCENE_CONFLICT":
+        parts.insert(0, "SCENE_CONFLICT")
+    if not parts:
+        parts.append(reason)
+    return ";".join(parts)[:REASON_MAX_CHARS]
+
+
+def result_info(result):
+    """Compact group scores for USB; no diagnostic text is drawn on images."""
+    parts = []
+    codes = {"rank": "R", "suit": "S", "joker": "J", "back": "B"}
+    for group in ("rank", "suit", "joker", "back"):
+        info = result.get("groups", {}).get(group, {})
+        label = info.get("label")
+        if label is None:
+            continue
+        parts.append("%s:%s,%.3f,%.3f,%d" % (
+            codes[group], label, info.get("score", -1.0),
+            info.get("margin", 0.0), 1 if info.get("accepted") else 0))
+    return ";".join(parts)[:INFO_MAX_CHARS]
+
+
+def print_result(result):
+    label = result.get("label", "UNKNOWN")
+    print("RESULT:" + label)
+    if label == "UNKNOWN":
+        print("REASON:" + unknown_detail(result))
+    info = result_info(result)
+    if info:
+        print("INFO:" + info)
 
 
 def draw_trigger_debug(frame, result, sequence, profile):
-    """Overlay the already-processed trigger frame for OpenMV IDE display."""
+    """Draw geometry only; all text diagnostics are printed through USB."""
     if not DEBUG_DRAW_TRIGGER_FRAME or frame is None:
         return
 
     # Search windows are drawn after recognition, so these pixels never enter
-    # LAB location, local Otsu, SSIM, or the UART timing measurement.
+    # LAB location, local Otsu, template scoring, or the result timing measurement.
     for group in ("rank", "suit", "joker", "back"):
         frame.draw_rectangle(RECOGNITION_ROIS[group],
                              color=DEBUG_ROI_COLORS[group])
@@ -127,19 +198,10 @@ def draw_trigger_debug(frame, result, sequence, profile):
                  else DEBUG_CANDIDATE_COLOR)
         box = info["box"]
         frame.draw_rectangle(box, color=color)
-        score = info.get("score")
-        if score is not None:
-            text = "%s %.2f" % (group, score)
-            frame.draw_string((max(0, box[0]), max(14, box[1] - 11)),
-                              text, color=color)
-
-    total_ms = profile.get("total_ms")
-    title = "#%d %s" % (sequence, result.get("label", "UNKNOWN"))
-    if total_ms is not None:
-        title += " %dms" % total_ms
-    frame.draw_string((2, 2), title, color=(255, 255, 255))
-    frame.draw_string((2, 13), result.get("reason", "")[:38],
-                      color=(255, 255, 255))
+    # snapshot() pushes the previous application frame to the IDE stream.
+    # Explicitly flush this annotated final frame so it appears on this trigger.
+    if hasattr(frame, "flush"):
+        frame.flush()
 
 
 def recognize_trigger(cam, bank, trigger_ms):
@@ -207,10 +269,6 @@ def main():
     V.ensure_storage()
     cam, camera, leds = V.start_camera(False)
     bank = V.load_bank(camera, STRICT_TEMPLATE_COVERAGE, MAX_TEMPLATES_PER_LABEL)
-    uart = UART(UART_ID, baudrate=UART_BAUD, bits=8, parity=None, stop=1,
-                timeout=UART_TIMEOUT_MS) if UART_ENABLED else None
-    if uart is not None and not hasattr(uart, "txdone"):
-        raise RuntimeError("Firmware UART.txdone() required to measure complete transmission")
     pin = Pin(C.TRIGGER_PIN, Pin.IN, Pin.PULL_UP)
     # IRQ only latches timestamp. Never perform camera/I/O work in interrupt.
     state = [0, 0, 0]  # pending, first falling-edge time, armed
@@ -222,9 +280,9 @@ def main():
             state[2] = 0
 
     pin.irq(trigger=Pin.IRQ_FALLING, handler=on_falling)
-    print("READY: P9 -> GND; UART3 P4 TX/P5 RX; no no-card detection")
+    print("READY: P9 -> GND; results on USB; no no-card detection")
     print("Camera:", camera)
-    print("SSIM thresholds are provisional. New templates only; profile on hardware.")
+    print("Difference-score thresholds are provisional; profile on hardware.")
     print("IDE trigger-frame overlay:", DEBUG_DRAW_TRIGGER_FRAME)
     sequence = 0
     high_since = None
@@ -245,20 +303,15 @@ def main():
                 except Exception as error:
                     result = {"label": "ERROR", "reason": repr(error), "groups": {}}
                     profile = {}
-                # Ensure no success label is emitted after the processing deadline.
+                # Leave a small reserve for the primary USB result lines.
                 if time.ticks_diff(time.ticks_ms(), trigger_ms) >= RESULT_BUDGET_MS - OUTPUT_RESERVE_MS:
                     result["label"], result["reason"] = "UNKNOWN", "TIMEOUT"
-                tx_start = time.ticks_ms()
-                try:
-                    send_result(uart, result["label"])
-                    profile["uart_ms"] = time.ticks_diff(time.ticks_ms(), tx_start)
-                    profile["total_ms"] = time.ticks_diff(time.ticks_ms(), trigger_ms)
-                    profile["over_budget"] = profile["total_ms"] > RESULT_BUDGET_MS
-                except Exception as error:
-                    profile["transport_error"] = repr(error)
-                # USB printing is outside the UART result critical path.
+                usb_start = time.ticks_ms()
+                print_result(result)
+                profile["usb_result_ms"] = time.ticks_diff(time.ticks_ms(), usb_start)
+                profile["total_ms"] = time.ticks_diff(time.ticks_ms(), trigger_ms)
+                profile["over_budget"] = profile["total_ms"] > RESULT_BUDGET_MS
                 if PRINT_PROFILE:
-                    print("RESULT:" + result["label"] if uart is not None else "RESULT_SENT")
                     print("PROFILE", sequence, profile)
                     print("DECISION", result["reason"], result["groups"])
                 draw_trigger_debug(debug_frame, result, sequence, profile)

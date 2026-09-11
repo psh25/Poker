@@ -15,13 +15,13 @@ import cards_fast_config as C
 import cards_hybrid_core as V
 
 # ----------------------- Edit these before running -----------------------
-CAPTURE_KIND = "back"  # "normal", "joker", "back"; no no-card class.
-RANK_LABEL = "7"
+CAPTURE_KIND = "normal"  # "normal", "joker", "back"; no no-card class.
+RANK_LABEL = "Q"
 SUIT_LABEL = "club"
 JOKER_COLOR = "red"  # Metadata for actual red/black joker, not a guessed label.
 NORMAL_SAVE_GROUPS = ("rank",)  # Change to ("suit",) for suit collection.
 SAVE_TEMPLATES = True  # False: independent validation set, even if extraction fails.
-CALIBRATE_CAMERA = False  # Set True only when deliberately recalibrating.
+CALIBRATE_CAMERA = True  # Set True only when deliberately recalibrating.
 CAPTURE_CORRECTION_DEG = 0  # Nominal pose normally needs no correction.
 PREVIEW_INTERVAL_MS = 150
 MAX_TEMPLATES_PER_LABEL = 2

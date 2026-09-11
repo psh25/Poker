@@ -17,10 +17,10 @@ import cards_hybrid_core as V
 # Wider than capture ROIs so the complete symbols remain visible throughout
 # the measured mechanical displacement range.
 RECOGNITION_ROIS = {
-    "rank": (70, 15, 130, 160),
-    "suit": (70, 110, 130, 125),
-    "joker": (85, 15, 120, 170),
-    "back": (95, 45, 80, 120),
+    "rank": (100, 25, 100, 155),
+    "suit": (100, 130, 100, 110),
+    "joker": (110, 25, 80, 150),
+    "back": (160, 120, 40, 40),
 }
 
 COARSE_ANGLES = (0,)
@@ -69,6 +69,15 @@ MAX_ATTEMPTS = 1  # Current requirement: no recapture; failure emits UNKNOWN.
 RETRY_SETTLE_MS = 20
 DISCARD_AFTER_TRIGGER = 1
 PRINT_PROFILE = True
+DEBUG_DRAW_TRIGGER_FRAME = True  # Draw only after UART output/timing completes.
+DEBUG_ROI_COLORS = {
+    "rank": (255, 0, 0),
+    "suit": (0, 0, 255),
+    "joker": (255, 0, 255),
+    "back": (0, 255, 255),
+}
+DEBUG_CANDIDATE_COLOR = (255, 255, 0)
+DEBUG_ACCEPTED_COLOR = (0, 255, 0)
 # --------------------------------------------------------------------------------
 
 
@@ -94,10 +103,50 @@ def send_result(uart, label):
         time.sleep_ms(1)
 
 
+def draw_trigger_debug(frame, result, sequence, profile):
+    """Overlay the already-processed trigger frame for OpenMV IDE display."""
+    if not DEBUG_DRAW_TRIGGER_FRAME or frame is None:
+        return
+
+    # Search windows are drawn after recognition, so these pixels never enter
+    # LAB location, local Otsu, SSIM, or the UART timing measurement.
+    for group in ("rank", "suit", "joker", "back"):
+        frame.draw_rectangle(RECOGNITION_ROIS[group],
+                             color=DEBUG_ROI_COLORS[group])
+
+    groups = result.get("groups", {})
+    for group in ("rank", "suit", "joker", "back"):
+        info = groups.get(group)
+        if not info or "box" not in info:
+            continue
+        # A rejected back box is identical to its fixed search ROI and would
+        # hide the cyan outline without adding useful information.
+        if group == "back" and not info.get("accepted", False):
+            continue
+        color = (DEBUG_ACCEPTED_COLOR if info.get("accepted", False)
+                 else DEBUG_CANDIDATE_COLOR)
+        box = info["box"]
+        frame.draw_rectangle(box, color=color)
+        score = info.get("score")
+        if score is not None:
+            text = "%s %.2f" % (group, score)
+            frame.draw_string((max(0, box[0]), max(14, box[1] - 11)),
+                              text, color=color)
+
+    total_ms = profile.get("total_ms")
+    title = "#%d %s" % (sequence, result.get("label", "UNKNOWN"))
+    if total_ms is not None:
+        title += " %dms" % total_ms
+    frame.draw_string((2, 2), title, color=(255, 255, 255))
+    frame.draw_string((2, 13), result.get("reason", "")[:38],
+                      color=(255, 255, 255))
+
+
 def recognize_trigger(cam, bank, trigger_ms):
     budget = V.Budget(trigger_ms, RESULT_BUDGET_MS - OUTPUT_RESERVE_MS)
     result = {"label": "UNKNOWN", "reason": "NO_RESULT", "groups": {}}
     profile = {"attempts": 0, "capture_ms": 0, "passes": []}
+    frame = None
     try:
         for attempt in range(MAX_ATTEMPTS):
             budget.check()
@@ -144,13 +193,13 @@ def recognize_trigger(cam, bank, trigger_ms):
             if budget.remaining() <= needed:
                 result["reason"] = "RETRY_BUDGET_EXHAUSTED"
                 break
-            del frame
+            frame = None
             time.sleep_ms(RETRY_SETTLE_MS)
         budget.check()
     except V.BudgetExceeded:
         result = {"label": "UNKNOWN", "reason": "TIMEOUT", "groups": {}}
     profile["processing_ms"] = time.ticks_diff(time.ticks_ms(), trigger_ms)
-    return result, profile
+    return result, profile, frame
 
 
 def main():
@@ -176,6 +225,7 @@ def main():
     print("READY: P9 -> GND; UART3 P4 TX/P5 RX; no no-card detection")
     print("Camera:", camera)
     print("SSIM thresholds are provisional. New templates only; profile on hardware.")
+    print("IDE trigger-frame overlay:", DEBUG_DRAW_TRIGGER_FRAME)
     sequence = 0
     high_since = None
     gc.collect()
@@ -189,8 +239,9 @@ def main():
             trigger_ms = state[1]
             if pin.value() == 0:
                 sequence += 1
+                debug_frame = None
                 try:
-                    result, profile = recognize_trigger(cam, bank, trigger_ms)
+                    result, profile, debug_frame = recognize_trigger(cam, bank, trigger_ms)
                 except Exception as error:
                     result = {"label": "ERROR", "reason": repr(error), "groups": {}}
                     profile = {}
@@ -210,6 +261,7 @@ def main():
                     print("RESULT:" + result["label"] if uart is not None else "RESULT_SENT")
                     print("PROFILE", sequence, profile)
                     print("DECISION", result["reason"], result["groups"])
+                draw_trigger_debug(debug_frame, result, sequence, profile)
                 gc.collect()  # Idle cleanup before re-arming; not per template.
             state[0] = 0
             high_since = None

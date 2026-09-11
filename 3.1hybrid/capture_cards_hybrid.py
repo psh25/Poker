@@ -15,9 +15,9 @@ import cards_fast_config as C
 import cards_hybrid_core as V
 
 # ----------------------- Edit these before running -----------------------
-CAPTURE_KIND = "normal"  # "normal", "joker", "back"; no no-card class.
-RANK_LABEL = "4"
-SUIT_LABEL = "diamond"
+CAPTURE_KIND = "back"  # "normal", "joker", "back"; no no-card class.
+RANK_LABEL = "7"
+SUIT_LABEL = "club"
 JOKER_COLOR = "red"  # Metadata for actual red/black joker, not a guessed label.
 NORMAL_SAVE_GROUPS = ("rank",)  # Change to ("suit",) for suit collection.
 SAVE_TEMPLATES = True  # False: independent validation set, even if extraction fails.
@@ -28,11 +28,11 @@ MAX_TEMPLATES_PER_LABEL = 2
 
 # Search windows may be broad; the selected glyph is cropped again before Otsu.
 CAPTURE_ROIS = {
-    "rank": (90, 25, 110, 135),
-    "suit": (90, 130, 110, 110),
+    "rank": (100, 25, 100, 145),
+    "suit": (100, 130, 100, 110),
     # Keep only the stable visible JOKER lettering, without the artwork.
-    "joker": (90, 20, 110, 160),
-    "back": (95, 45, 80, 120),
+    "joker": (120, 40, 50, 140),
+    "back": (170, 120, 40, 40),
 }
 
 CAPTURE_VISION = {

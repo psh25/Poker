@@ -5,7 +5,7 @@ P9 falling edge: fresh capture -> native pixel difference -> same-frame refineme
 most one retry. Results and diagnostics are printed through the USB IDE
 terminal. UNKNOWN means insufficient evidence, NEVER "no card".
 The 900 ms deadline is cooperative: an individual native call cannot be
-interrupted. Measure PROFILE total_ms on the actual H7 Plus before acceptance.
+interrupted. Measure TIME_MS on the actual H7 Plus before acceptance.
 """
 import gc
 import time
@@ -69,7 +69,7 @@ OUTPUT_RESERVE_MS = 15
 MAX_ATTEMPTS = 1  # Current requirement: no recapture; failure emits UNKNOWN.
 RETRY_SETTLE_MS = 20
 DISCARD_AFTER_TRIGGER = 1
-PRINT_PROFILE = True
+PRINT_TIMING = True
 DEBUG_DRAW_TRIGGER_FRAME = True  # Draw only after USB result/timing completes.
 DEBUG_ROI_COLORS = {
     "rank": (255, 0, 0),
@@ -268,7 +268,7 @@ def main():
     V.validate_config(RECOGNITION_VISION)
     V.ensure_storage()
     cam, camera, leds = V.start_camera(False)
-    bank = V.load_bank(camera, STRICT_TEMPLATE_COVERAGE, MAX_TEMPLATES_PER_LABEL)
+    bank = V.load_bank(STRICT_TEMPLATE_COVERAGE, MAX_TEMPLATES_PER_LABEL)
     pin = Pin(C.TRIGGER_PIN, Pin.IN, Pin.PULL_UP)
     # IRQ only latches timestamp. Never perform camera/I/O work in interrupt.
     state = [0, 0, 0]  # pending, first falling-edge time, armed
@@ -282,7 +282,7 @@ def main():
     pin.irq(trigger=Pin.IRQ_FALLING, handler=on_falling)
     print("READY: P9 -> GND; results on USB; no no-card detection")
     print("Camera:", camera)
-    print("Difference-score thresholds are provisional; profile on hardware.")
+    print("Difference-score thresholds are provisional; check TIME_MS on hardware.")
     print("IDE trigger-frame overlay:", DEBUG_DRAW_TRIGGER_FRAME)
     sequence = 0
     high_since = None
@@ -311,9 +311,8 @@ def main():
                 profile["usb_result_ms"] = time.ticks_diff(time.ticks_ms(), usb_start)
                 profile["total_ms"] = time.ticks_diff(time.ticks_ms(), trigger_ms)
                 profile["over_budget"] = profile["total_ms"] > RESULT_BUDGET_MS
-                if PRINT_PROFILE:
-                    print("PROFILE", sequence, profile)
-                    print("DECISION", result["reason"], result["groups"])
+                if PRINT_TIMING:
+                    print("TIME_MS:%d" % profile["total_ms"])
                 draw_trigger_debug(debug_frame, result, sequence, profile)
                 gc.collect()  # Idle cleanup before re-arming; not per template.
             state[0] = 0

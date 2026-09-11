@@ -2,7 +2,8 @@
 
 Copy cards_fast_config.py and cards_hybrid_core.py beside this script on /flash.
 1. Tune CAPTURE_ROIS to cover the measured mechanical range.
-2. First run: CALIBRATE_CAMERA=True. Later runs: False, same illumination.
+2. Set CALIBRATE_CAMERA=True whenever deliberately testing a new locked
+   exposure/gain/white-balance calibration. Existing templates remain usable.
 3. Select labels below. P9 -> GND once saves one sample. Release to re-arm.
 4. Inspect live tight boxes AND normalized patches before collecting.
 5. SAVE_TEMPLATES=False performs a visual validation pass without writing files.
@@ -21,15 +22,15 @@ SUIT_LABEL = "club"
 JOKER_COLOR = "red"  # Metadata for actual red/black joker, not a guessed label.
 NORMAL_SAVE_GROUPS = ("rank",)  # Change to ("suit",) for suit collection.
 SAVE_TEMPLATES = True  # False: independent validation set, even if extraction fails.
-CALIBRATE_CAMERA = True  # Set True only when deliberately recalibrating.
+CALIBRATE_CAMERA = True  # Existing templates no longer block recalibration.
 CAPTURE_CORRECTION_DEG = 0  # Nominal pose normally needs no correction.
 PREVIEW_INTERVAL_MS = 150
 MAX_TEMPLATES_PER_LABEL = 2
 
 # Search windows may be broad; the selected glyph is cropped again before Otsu.
 CAPTURE_ROIS = {
-    "rank": (100, 25, 100, 145),
-    "suit": (100, 130, 100, 110),
+    "rank": (105, 25, 100, 145),
+    "suit": (105, 130, 100, 110),
     # Keep only the stable visible JOKER lettering, without the artwork.
     "joker": (120, 40, 50, 140),
     "back": (170, 120, 40, 40),
@@ -147,7 +148,7 @@ def check_label_count(group, label):
         raise ValueError("Template limit reached for %s/%s; use validation mode or curate bank" % (group, label))
 
 
-def require_compatible_bank(camera):
+def require_compatible_bank():
     """Do not silently mix invalid older templates into the unique bank."""
     for group in ("rank", "suit", "joker", "back"):
         directory = C.ROOT + "/templates/" + group
@@ -158,12 +159,11 @@ def require_compatible_bank(camera):
             if not V.exists(meta_path):
                 raise ValueError("Remove incomplete old template: " + name)
             metadata = V.read_json(meta_path)
-            if (metadata.get("signature") != V.signature()
-                    or metadata.get("camera") != camera):
-                raise ValueError("Old/incompatible bank under %s; archive or clear templates first" % C.ROOT)
+            if metadata.get("signature") != V.signature():
+                raise ValueError("Old/incompatible preprocessing under %s; archive or clear templates first" % C.ROOT)
 
 
-def save_capture(frame, camera, patches, boxes, diagnostics):
+def save_capture(frame, patches, boxes, diagnostics):
     groups = groups_to_save()
     failures = []
     if SAVE_TEMPLATES:
@@ -196,7 +196,7 @@ def save_capture(frame, camera, patches, boxes, diagnostics):
         for group in groups:
             label = label_for(group)
             base = next_template_base(group, label)
-            metadata = {"group": group, "label": label, "camera": camera,
+            metadata = {"group": group, "label": label,
                         "signature": V.signature(), "box": boxes[group],
                         "joker_color": JOKER_COLOR if group == "joker" else None,
                         "correction_deg": CAPTURE_CORRECTION_DEG,
@@ -210,12 +210,8 @@ def save_capture(frame, camera, patches, boxes, diagnostics):
 def main():
     validate_capture()
     free_bytes = V.ensure_storage()
-    if CALIBRATE_CAMERA:
-        for group in ("rank", "suit", "joker", "back"):
-            if any(n.endswith(".pgm") for n in os.listdir(C.ROOT + "/templates/" + group)):
-                raise ValueError("Camera recalibration needs a new ROOT or an archived template bank")
     cam, camera, leds = V.start_camera(CALIBRATE_CAMERA)
-    require_compatible_bank(camera)
+    require_compatible_bank()
     button = Pin(C.TRIGGER_PIN, Pin.IN, Pin.PULL_UP)
     last_raw = stable = button.value()
     changed = last_preview = time.ticks_ms()
@@ -240,7 +236,7 @@ def main():
             last_preview = now
         if pressed:
             try:
-                status = save_capture(frame, camera, patches, boxes, diagnostics)
+                status = save_capture(frame, patches, boxes, diagnostics)
             except Exception as error:
                 status = "SAVE_ERROR"
                 print("CAPTURE_ERROR:", error)

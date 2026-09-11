@@ -461,8 +461,16 @@ def layout_pairs(ranks, suits, settings, color_img=None):
     return pairs
 
 
-def load_bank(camera_settings, strict_coverage=False, max_templates_per_label=None):
+def load_bank(strict_coverage=False, max_templates_per_label=None):
+    """Load templates compatible with the current image-processing pipeline.
+
+    Camera exposure/gain/white-balance settings are deliberately not part of
+    template compatibility.  This permits testing one template bank with
+    different locked camera calibrations.  The canonicalization signature and
+    patch dimensions remain mandatory compatibility checks.
+    """
     bank = {k: [] for k in ("rank", "suit", "joker", "back")}
+    bank_counts = {}
     wanted = {"rank": C.RANKS, "suit": C.SUITS, "joker": ("joker",), "back": ("back",)}
     expected = signature()
     for group in bank:
@@ -474,8 +482,8 @@ def load_bank(camera_settings, strict_coverage=False, max_templates_per_label=No
             if not exists(meta_path):
                 raise ValueError("Uncommitted template (missing JSON): " + name)
             meta = read_json(meta_path)
-            if meta.get("signature") != expected or meta.get("camera") != camera_settings:
-                raise ValueError("Template preprocessing/camera mismatch: " + name)
+            if meta.get("signature") != expected:
+                raise ValueError("Template preprocessing mismatch: " + name)
             label = meta.get("label")
             if label not in wanted[group] or meta.get("group") != group:
                 raise ValueError("Invalid template label/group: " + name)
@@ -492,7 +500,10 @@ def load_bank(camera_settings, strict_coverage=False, max_templates_per_label=No
         missing = [label for label in wanted[group] if counts[label] == 0]
         if missing and strict_coverage:
             raise ValueError("Missing " + group + " templates: " + repr(missing))
-        print("BANK", group, counts)
+        bank_counts[group] = sum(counts.values())
+    print("BANK_READY rank=%d suit=%d joker=%d back=%d" % (
+        bank_counts["rank"], bank_counts["suit"],
+        bank_counts["joker"], bank_counts["back"]))
     gc.collect()
     return bank
 

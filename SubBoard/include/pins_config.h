@@ -20,9 +20,14 @@
 //   ⚠️ 量产子板接光敏时按实际原理图改到独立引脚，勿与电机 STBY 共用。
 
 // ---- 摄像头 / 视觉模组（接口待定：SPI / I2C / UART）----
-#define PIN_CAM_TX           10  // 子板的连到摄像头的TX
-#define PIN_CAM_RX           46  // 同上，子板的RX
-#define PIN_CAM_TRIG         20  // 未使用
+#define PIN_CAM_TX           10  // 子板 → 摄像头 TX
+#define PIN_CAM_RX           46  // 摄像头 → 子板 RX（只接收）
+// ⚠️ CAM_TRIG = GPIO20：ESP32-S3 的 GPIO19/20 是原生 USB 的 D-/D+。
+//    本工程开了 ARDUINO_USB_CDC_ON_BOOT，因此**开机时不要碰这个脚**，
+//    否则会把原生 USB 口拉坏。代码里改成"只在真正要截图时才配置成输出"，
+//    平时保持 USB 态；截图期间原生 USB 日志不可用，请从 CH340 口看日志。
+//    PCB 已固定该引脚，暂不改动；若以后要换脚需同步改原理图。
+#define PIN_CAM_TRIG         20  // 摄像头截图触发（拉高一个脉冲）
 
 // ---- 与底板通信：2 线 UART ----
 // 测试台接线（test1 rig ↔ 底板）：子板 RX=41 ← 底板 TX=42；子板 TX=42 → 底板 RX=41

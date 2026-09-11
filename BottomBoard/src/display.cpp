@@ -43,6 +43,17 @@ bool display_get_confirmed(void) {
     return g_confirmed != 0;
 }
 
+// 发牌方式：0=顺序（Seq），1=随机（Rand）
+static uint8_t g_orderRandom = 0;
+
+void display_set_order_random(bool randomMode) {
+    g_orderRandom = randomMode ? 1 : 0;
+}
+
+bool display_get_order_random(void) {
+    return g_orderRandom != 0;
+}
+
 void display_init(void) {
     tft.init();
     tft.setRotation(1);            // 横屏 160x128（若左右颠倒改为 3）
@@ -110,6 +121,12 @@ static void draw_idle_header(uint8_t selectedIndex, uint8_t confirmed) {
     } else {
         tft.print("Selected: -");
     }
+    // 发牌方式徽标：Seq（顺序）/ Rand（随机），IDLE 下长按编码器切换
+    uint16_t obg = g_orderRandom ? TFT_PURPLE : TFT_DARKGREEN;
+    tft.fillRoundRect(78, 1, 34, 9, 2, obg);
+    tft.setTextColor(TFT_WHITE, obg);
+    tft.setCursor(81, 2);
+    tft.print(g_orderRandom ? "Rand" : "Seq");
     // 方案多于 4 个时显示页码（如 1/2）
     if (SCHEME_COUNT > MENU_ROWS) {
         tft.setTextColor(TFT_CYAN, TFT_BLACK);
@@ -131,6 +148,7 @@ static void draw_confirm_button(uint8_t confirmed) {
     tft.setTextColor(bg, TFT_BLACK);
     tft.setCursor(8, 114);
     tft.print(confirmed ? "Press=OK" : "Press=Sel");
+    tft.print(" Hold=Mode");
 }
 
 // IDLE 屏幕：顶部（未选择/已选方案）+ 方案列表 + 底部确认按钮

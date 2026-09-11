@@ -4,8 +4,11 @@
 #include <stdio.h>
 
 static void dbg_write(const char *s) {
-    Serial.print(s);     // USB CDC
+    // 先写 CH340（UART0），再写 USB CDC：
+    // USB CDC 在异常情况下可能长时间阻塞（等待主机取数据），
+    // 先写 CH340 能保证日志不会因为 USB 异常而全部丢失。
     Serial0.print(s);    // UART0 / CH340（GPIO43/44）
+    Serial.print(s);     // USB CDC
 }
 
 void dbg_init(void) {

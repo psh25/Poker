@@ -85,9 +85,11 @@ sub <cmd> [hex data...]             # 底板 → 子板（自动组帧 + 自动�
 sim <type> [hex data...]            # 模拟子板 → 底板事件（本地喂给协议分发）
 idle | select <n> | dealing <pct>   # 底板屏幕测试
 setstate <idle|dealing|active>      # 强制切换底板状态机（调试）
-game list | game info               # 列出预置牌局 / 当前发牌计划
+game list | game info               # 列出牌局参数 / 当前计划（按当前发牌方式生成）
 game use <1-8|name>                 # 选择预置牌局（斗地主/掼蛋/升级/德州6人/桥牌/测试等）
-game custom players=N hand=N public=N bottom=N   # 自定义牌局参数
+game order [seq|rand]               # 查看/设置发牌方式（同 IDLE 长按编码器）
+game custom players=N hand=N [public=N] [bottom=N] [total=N]   # 设置 Custom 参数
+game random players=N hand=N [public=N] [bottom=N] [total=N]   # 同上并切到随机发牌
 ```
 
 - `cmd` / `type` 支持文本别名或 hex：
@@ -109,7 +111,8 @@ sub status      → 底板: [CLI] -> SUB type=0x03 ... sent
 sim cardout     → 底板模拟收到光敏事件，触发协议分发
 sub camcapture  → 子板拉高 PIN_CAM_TRIG 触发一次摄像头截图
 select 3        → 屏幕高亮方案 3
-game custom players=3 hand=17 public=0 bottom=3  → 生成斗地主式自定义计划并选中 Custom
+game random players=3 hand=17 bottom=3 total=54  → 设 Custom 参数 + 切到随机，选中 Custom
+game order rand → 只切换发牌方式（等效 IDLE 下长按编码器）
 game info       → 打印当前计划的发牌组（牌堆/张数/标签）
 ```
 

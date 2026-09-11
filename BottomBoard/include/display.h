@@ -54,5 +54,9 @@ uint8_t display_get_selected(void);
 void display_set_confirmed(bool on);
 bool display_get_confirmed(void);
 
+// 发牌方式（顺序/随机）：IDLE 屏顶部常驻显示，IDLE 下长按编码器切换
+void display_set_order_random(bool randomMode);
+bool display_get_order_random(void);
+
 // 发送一条调试提示（显示任务会停留约 0.7s 再继续）
 void send_display_debug(const char *msg);

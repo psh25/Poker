@@ -56,6 +56,7 @@ static uint8_t  s_deal_scheme = 0;            // 当前方案（0-based）
 static uint8_t  s_deal_deck = 0;              // 当前目标牌堆（0-based）
 static uint8_t  s_deal_progress = 0;          // 0~100
 static uint16_t s_dealt_count = 0;            // 已成功发出张数
+static uint16_t s_deal_total = 0;             // 本局计划总张数（CLI dealinfo 用）
 static bool     s_deal_error_active = false;  // 是否处于发牌错误（等待编码器重置）
 static uint8_t  s_deal_error_count = 0;
 static char     s_deal_errors[DEAL_ERROR_MAX][24];
@@ -179,14 +180,19 @@ static void host_handle_frame(const proto_frame_t *frame) {
 }
 
 // ================= 调试 CLI：电脑串口 → 底板 / 子板 =================
+// CLI 调试用发牌计划缓冲（与发牌任务的分开，避免互相覆盖）
+static deal_plan_t s_cliPlan;
+
 static void sub_debug_print_help(void) {
     Serial.println("[CLI] help                         - 本帮助");
     Serial.println("[CLI] state                        - 打印当前状态机状态");
     Serial.println("[CLI] dealstart                    - 启动发牌（模拟 IDLE 确认，配合 sim）");
     Serial.println("[CLI] decks | dealinfo             - 打印牌堆预设 / 发牌进度与错误");
-    Serial.println("[CLI] game list | game info        - 列出预置牌局 / 当前牌局的发牌组");
+    Serial.println("[CLI] game list | game info        - 列出牌局参数 / 当前计划（按当前发牌方式生成）");
     Serial.println("[CLI] game use <1-8|name>          - 选择预置牌局（等同 select）");
-    Serial.println("[CLI] game custom players=3 hand=17 public=0 bottom=3 - 自定义牌局");
+    Serial.println("[CLI] game order [seq|rand]        - 查看/设置发牌方式（同 IDLE 长按编码器）");
+    Serial.println("[CLI] game custom players=3 hand=17 bottom=3 total=54  - 设 Custom 参数");
+    Serial.println("[CLI] game random players=6 hand=2 public=5 total=52  - 同上并切到随机");
     Serial.println("[CLI] stop | reset                  - 停机回 IDLE / 复位（含子板）");
     Serial.println("[CLI] confirm                       - 确认当前方案（两段式第一步）");
     Serial.println("[CLI] subboard                      - 打印子板在线状态与心跳时间");
@@ -300,18 +306,23 @@ static void sub_debug_cli_process(const char *line) {
         for (int i = 0; i < DECK_COUNT; i++) {
             Serial.printf("  deck %d -> %d\n", i + 1, (int)kDeckAngles[i]);
         }
-        const deal_plan_t *plan = deal_scheme_plan(display_get_selected());
-        deal_plan_print(display_get_selected(), plan);
+        uint8_t sel = display_get_selected();
+        char err[48];
+        if (deal_build_plan(&s_cliPlan, sel, display_get_order_random() ? DEAL_ORDER_RANDOM
+                                                                        : DEAL_ORDER_SEQUENTIAL,
+                            err, sizeof(err))) {
+            deal_plan_print(sel, &s_cliPlan, deal_scheme_params(sel));
+        } else {
+            Serial.printf("[CLI] 计划生成失败：%s\n", err);
+        }
         return;
     }
 
     // dealinfo：发牌进度与错误（多条一并打印）
     if (strcmp(line, "dealinfo") == 0) {
-        const deal_plan_t *plan = deal_scheme_plan(s_deal_scheme);
-        uint16_t total = plan ? plan->totalCards : 0;
         Serial.printf("[CLI] scheme=%u deck=%u dealt=%u/%u progress=%u%% error=%s\n",
                       s_deal_scheme + 1, s_deal_deck + 1, s_dealt_count,
-                      (unsigned)total, s_deal_progress,
+                      (unsigned)s_deal_total, s_deal_progress,
                       s_deal_error_active ? "YES" : "no");
         for (uint8_t i = 0; i < s_deal_error_count; i++) {
             Serial.printf("[CLI]   err[%u] %s\n", i, s_deal_errors[i]);
@@ -321,23 +332,41 @@ static void sub_debug_cli_process(const char *line) {
 
     // game ...：参数驱动牌局（预置选择 / 自定义参数 / 查看发牌组）
     if (strcmp(line, "game") == 0 || strcmp(line, "game list") == 0) {
+        Serial.printf("[CLI] deal order = %s（IDLE 下长按编码器切换）\n",
+                      display_get_order_random() ? "RANDOM" : "SEQUENTIAL");
         Serial.println("[CLI] game list:");
         for (uint8_t i = 0; i < SCHEME_COUNT; i++) {
-            const deal_plan_t *p = deal_scheme_plan(i);
-            if (!p) continue;
-            if (p->mode == DEAL_MODE_ROTATE_TEST) {
-                Serial.printf("[CLI]  %u) %-10s rotate %u turns\n",
-                              (unsigned)i + 1, p->name, (unsigned)p->rotateTurns);
-            } else {
-                Serial.printf("[CLI]  %u) %-10s groups=%u cards=%u\n",
-                              (unsigned)i + 1, p->name,
-                              (unsigned)p->groupCount, (unsigned)p->totalCards);
+            const deal_params_t *p = deal_scheme_params(i);
+            if (i == DEAL_INDEX_ROTATE_TEST) {
+                Serial.printf("[CLI]  %u) %-10s rotate test（只转不发）\n",
+                              (unsigned)i + 1, deal_scheme_name(i));
+                continue;
             }
+            if (!p || p->players == 0) {
+                Serial.printf("[CLI]  %u) %-10s (未设置参数：game custom ...)\n",
+                              (unsigned)i + 1, deal_scheme_name(i));
+                continue;
+            }
+            Serial.printf("[CLI]  %u) %-10s %u人x%u 公共%u 底牌%u 总数%u → 需要%u 弃牌%d 牌堆%u\n",
+                          (unsigned)i + 1, deal_scheme_name(i),
+                          (unsigned)p->players, (unsigned)p->handCards,
+                          (unsigned)p->publicCards, (unsigned)p->bottomCards,
+                          (unsigned)p->totalCards,
+                          (unsigned)deal_params_required(p), (int)deal_params_discard(p),
+                          (unsigned)deal_params_piles(p));
         }
         return;
     }
     if (strcmp(line, "game info") == 0) {
-        deal_plan_print(display_get_selected(), deal_scheme_plan(display_get_selected()));
+        uint8_t sel = display_get_selected();
+        char err[48];
+        if (deal_build_plan(&s_cliPlan, sel, display_get_order_random() ? DEAL_ORDER_RANDOM
+                                                                        : DEAL_ORDER_SEQUENTIAL,
+                            err, sizeof(err))) {
+            deal_plan_print(sel, &s_cliPlan, deal_scheme_params(sel));
+        } else {
+            Serial.printf("[CLI] 计划生成失败：%s\n", err);
+        }
         return;
     }
     if (strncmp(line, "game use ", 9) == 0) {
@@ -359,32 +388,70 @@ static void sub_debug_cli_process(const char *line) {
         Serial.printf("[CLI] game -> %d) %s\n", idx + 1, deal_scheme_name((uint8_t)idx));
         return;
     }
-    if (strncmp(line, "game custom", 11) == 0) {
-        deal_params_t params = { 0, 0, 0, 0 };
-        char buf[64];
+    // game order [seq|rand]：查看/设置发牌方式（与方案无关，同 IDLE 长按）
+    if (strcmp(line, "game order") == 0) {
+        Serial.printf("[CLI] deal order = %s\n",
+                      display_get_order_random() ? "RANDOM" : "SEQUENTIAL");
+        return;
+    }
+    if (strncmp(line, "game order ", 11) == 0) {
+        const char *p = line + 11;
+        bool rnd;
+        if      (strcmp(p, "seq") == 0 || strcmp(p, "sequential") == 0) rnd = false;
+        else if (strcmp(p, "rand") == 0 || strcmp(p, "random") == 0)    rnd = true;
+        else { Serial.println("[CLI] game order: seq | rand"); return; }
+        display_set_order_random(rnd);
+        display_cmd_t cmd = {};
+        cmd.type = DISPLAY_CMD_SELECT;
+        cmd.payload.menu.selectedIndex = display_get_selected();
+        cmd.payload.menu.confirmed = display_get_confirmed() ? 1 : 0;
+        send_display_command(&cmd);
+        Serial.printf("[CLI] deal order -> %s\n", rnd ? "RANDOM" : "SEQUENTIAL");
+        return;
+    }
+
+    // game custom/random <k=v ...>：设置 Custom 方案参数
+    //   players=N 人数、hand=M 每人张数、public=P 公共、bottom=B 底牌、total=T 本局总牌数
+    //   不写 total 时按“刚好够”（= 人数×每人+公共+底牌），即没有弃牌；
+    //   game random 会把发牌方式一并切到随机。
+    if (strncmp(line, "game custom", 11) == 0 || strncmp(line, "game random", 11) == 0) {
+        bool forceRandom = (line[5] == 'r');
+        deal_params_t params = { 0, 0, 0, 0, 0 };
+        bool totalGiven = false;
+
+        char buf[80];
         strncpy(buf, line + 11, sizeof(buf) - 1);
         buf[sizeof(buf) - 1] = '\0';
         for (char *tok = strtok(buf, " \t"); tok; tok = strtok(NULL, " \t")) {
             char key[16] = {0};
             int val = 0;
             if (sscanf(tok, "%15[^=]=%d", key, &val) != 2) continue;
-            if (val < 0 || val > 255) { Serial.println("[CLI] game custom: 参数范围 0~255"); return; }
-            if (strcmp(key, "players") == 0)      params.players = (uint8_t)val;
+            if (val < 0 || val > 255) { Serial.println("[CLI] 参数范围 0~255"); return; }
+            if      (strcmp(key, "players") == 0) params.players = (uint8_t)val;
             else if (strcmp(key, "hand") == 0)    params.handCards = (uint8_t)val;
             else if (strcmp(key, "public") == 0)  params.publicCards = (uint8_t)val;
             else if (strcmp(key, "bottom") == 0)  params.bottomCards = (uint8_t)val;
-            else { Serial.printf("[CLI] game custom: 未知参数 %s\n", key); return; }
+            else if (strcmp(key, "total") == 0) { params.totalCards = (uint16_t)val; totalGiven = true; }
+            else { Serial.printf("[CLI] 未知参数 %s\n", key); return; }
         }
+        if (!totalGiven) params.totalCards = deal_params_required(&params);
+        if (forceRandom) display_set_order_random(true);
+
+        // 先在临时缓冲里试算：成功才写入 Custom 槽位
         char err[48];
-        if (!deal_plan_build(deal_scheme_custom(), "Custom", &params, err, sizeof(err))) {
-            Serial.printf("[CLI] game custom 失败：%s\n", err);
-            return;
-        }
+        bool ok = display_get_order_random()
+                      ? deal_plan_build_random(&s_cliPlan, "Custom", &params, err, sizeof(err))
+                      : deal_plan_build_sequential(&s_cliPlan, "Custom", &params, err, sizeof(err));
+        if (!ok) { Serial.printf("[CLI] 设置失败：%s\n", err); return; }
+
+        *deal_scheme_params_custom() = params;
         host_action_select(DEAL_INDEX_CUSTOM);
-        Serial.printf("[CLI] game custom: players=%u hand=%u public=%u bottom=%u\n",
+        Serial.printf("[CLI] Custom: %u人x%u 公共%u 底牌%u 总数%u (order=%s)\n",
                       (unsigned)params.players, (unsigned)params.handCards,
-                      (unsigned)params.publicCards, (unsigned)params.bottomCards);
-        deal_plan_print(DEAL_INDEX_CUSTOM, deal_scheme_custom());
+                      (unsigned)params.publicCards, (unsigned)params.bottomCards,
+                      (unsigned)params.totalCards,
+                      display_get_order_random() ? "RANDOM" : "SEQUENTIAL");
+        deal_plan_print(DEAL_INDEX_CUSTOM, &s_cliPlan, deal_scheme_params_custom());
         return;
     }
 
@@ -567,6 +634,9 @@ void vSubboardTask(void *pv) {
 // ================= 发牌控制任务 =================
 static bool deal_error_active(void) { return s_deal_error_active; }
 
+// 发牌任务自己的工作计划缓冲（随机模式每局重新生成）
+static deal_plan_t s_runningPlan;
+
 static void deal_add_error(const char *msg) {
     if (s_deal_error_count < DEAL_ERROR_MAX) {
         strncpy(s_deal_errors[s_deal_error_count], msg, sizeof(s_deal_errors[0]) - 1);
@@ -664,12 +734,18 @@ void vDealTask(void *pv) {
         s_deal_scheme = display_get_selected();
         busy_deal_step("deal_start");
 
-        const deal_plan_t *plan = deal_scheme_plan(s_deal_scheme);
-        if (!plan) {
-            deal_add_error("scheme undefined");
+        // 按“方案参数 + 当前发牌方式（顺序/随机）”现场生成计划
+        char perr[48];
+        if (!deal_build_plan(&s_runningPlan, s_deal_scheme,
+                             display_get_order_random() ? DEAL_ORDER_RANDOM
+                                                        : DEAL_ORDER_SEQUENTIAL,
+                             perr, sizeof(perr))) {
+            deal_add_error(perr);
             deal_fail();
             continue;
         }
+        const deal_plan_t *plan = &s_runningPlan;
+        s_deal_total = plan->totalCards;
 
         // 旋转测试：不发牌，底盘连续转若干圈后自动回 IDLE
         if (plan->mode == DEAL_MODE_ROTATE_TEST) {
@@ -891,13 +967,28 @@ void vEncoderTask(void *pv) {
             }
         }
 
-        // 1.5) GAME_ACTIVE 长按：按住 ENCODER_LONG_PRESS_MS 后确认结束并直接回 IDLE
+        // 1.5) 长按动作：
+        //   IDLE        → 切换发牌方式（顺序 ↔ 随机），屏幕顶部徽标即时更新
+        //   GAME_ACTIVE → 确认结束并直接回 IDLE
         if (prev_sw == 0 && !sw_long_done &&
-            state_get_current() == STATE_GAME_ACTIVE &&
             (uint32_t)(now_ms - sw_press_ms) >= (uint32_t)ENCODER_LONG_PRESS_MS) {
-            sw_long_done = true;
-            Serial.println("[ENC] long press: game end & reset to IDLE");
-            xEventGroupSetBits(xStateEventGroup, BIT_RESET);
+            system_state_t ls = state_get_current();
+            if (ls == STATE_GAME_ACTIVE) {
+                sw_long_done = true;
+                Serial.println("[ENC] long press: game end & reset to IDLE");
+                xEventGroupSetBits(xStateEventGroup, BIT_RESET);
+            } else if (ls == STATE_IDLE) {
+                sw_long_done = true;
+                bool rnd = !display_get_order_random();
+                display_set_order_random(rnd);
+                Serial.printf("[ENC] long press: deal order = %s\n",
+                              rnd ? "RANDOM" : "SEQUENTIAL");
+                display_cmd_t cmd = {};
+                cmd.type = DISPLAY_CMD_SELECT;
+                cmd.payload.menu.selectedIndex = display_get_selected();
+                cmd.payload.menu.confirmed = display_get_confirmed() ? 1 : 0;
+                send_display_command(&cmd);
+            }
         }
 
         // 2) 1ms 轮询 A/B 相正交解码

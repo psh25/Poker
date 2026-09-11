@@ -18,7 +18,6 @@
 
 // ---- 串口接收环形缓冲（架构第四章：中断写入，主循环解析）----
 static volatile uint8_t s_rx_ring[UART_RX_RING_SIZE];
-static void cam_uart_rx_isr(void);   // 摄像头回传串口中断（定义见下方“摄像头”一节）
 static volatile uint16_t s_rx_head = 0;   // 写入位置
 static volatile uint16_t s_rx_tail = 0;   // 读取位置
 
@@ -78,12 +77,9 @@ void sub_hardware_init(void) {
     // 光敏
     pinMode(PIN_PHOTO, INPUT_PULLUP);     // TODO: 按传感器电平配置
 
-    // 摄像头：截图触发脚先初始化；识别接口（UART）待模组确定
-    pinMode(PIN_CAM_TRIG, OUTPUT);
-    digitalWrite(PIN_CAM_TRIG, LOW);
-    // 摄像头回传串口（只接收：摄像头 TX → PIN_CAM_RX；PIN_CAM_TX 备用）
-    Serial2.begin(CAM_UART_BAUD, SERIAL_8N1, PIN_CAM_RX, PIN_CAM_TX);
-    Serial2.onReceive(cam_uart_rx_isr);
+    // 摄像头：这里的初始化已挪到 sub_camera_trigger()（首次触发时才配置）。
+    // 原因：PIN_CAM_TRIG = GPIO20 是 ESP32-S3 原生 USB 的 D+，
+    //       开机就把它配成输出会破坏原生 USB 口。平时不碰，避免影响开机自检。
 
     // 与底板通信串口（2 线 UART）
     Serial1.begin(SUB_UART_BAUD, SERIAL_8N1, SUB_UART_RX_PIN, SUB_UART_TX_PIN);
@@ -118,35 +114,15 @@ void sub_self_test(void) {
 //   末尾   校验     从 byte1 到 data 末字节的累加和低 8 位
 //   解析失败（帧头/长度/校验不符）→ 丢弃并重新找帧头
 //
-// 接收路径：Serial2 收到字节 → onReceive 中断写入环形缓冲 → 主循环 sub_camera_service() 解析。
+// 接收路径：截图等待窗口内，主循环 sub_camera_service() 轮询 Serial2 并解析（见下）。
 // 结果去向：解析成功后发 EVT_CARD_VALUE（data = 识别载荷）；超时未回传时按 CAM_EMPTY_ON_TIMEOUT 处理。
 
 #define CAM_FRAME_HEADER 0x5A
 #define CAM_TYPE_RESULT  0x01
 
-static volatile uint8_t  s_cam_ring[CAM_RX_RING_SIZE];
-static volatile uint16_t s_cam_head = 0;
-static volatile uint16_t s_cam_tail = 0;
-
-static void cam_ring_write(uint8_t b) {
-    uint16_t next = (s_cam_head + 1) % CAM_RX_RING_SIZE;
-    if (next == s_cam_tail) return;      // 满则丢弃
-    s_cam_ring[s_cam_head] = b;
-    s_cam_head = next;
-}
-
-static bool cam_ring_read(uint8_t *b) {
-    if (s_cam_tail == s_cam_head) return false;
-    *b = s_cam_ring[s_cam_tail];
-    s_cam_tail = (s_cam_tail + 1) % CAM_RX_RING_SIZE;
-    return true;
-}
-
-static void cam_uart_rx_isr(void) {
-    while (Serial2.available() > 0) {
-        cam_ring_write((uint8_t)Serial2.read());
-    }
-}
+// 接收方式：在截图等待窗口内轮询 Serial2（不用 onReceive 中断）。
+// 原因：摄像头未接时 RX 引脚浮空，中断会被噪声反复触发；轮询只在等待窗口读，
+//       天然规避这个问题。等摄像头接线确认后如需中断可再加回。
 
 // 截图会话状态：IDLE → PULSE（TRIG 高）→ WAIT（等回传）→ IDLE
 typedef enum { CAM_IDLE = 0, CAM_PULSE, CAM_WAIT } cam_session_t;
@@ -155,11 +131,19 @@ static uint32_t      s_cam_t0 = 0;
 static uint8_t       s_cam_payload[CARD_DATA_MAX];
 static uint8_t       s_cam_payload_len = 0;
 static bool          s_cam_got_result = false;
+static bool          s_cam_inited = false;
 
 void sub_camera_trigger(void) {
     if (s_cam_state != CAM_IDLE) {
         dbg_println("[CAM] trigger ignored (session busy)");
         return;
+    }
+    // 首次触发才配置：GPIO20 平时保持原生 USB 状态，不碰它
+    if (!s_cam_inited) {
+        s_cam_inited = true;
+        pinMode(PIN_CAM_TRIG, OUTPUT);
+        digitalWrite(PIN_CAM_TRIG, LOW);
+        Serial2.begin(CAM_UART_BAUD, SERIAL_8N1, PIN_CAM_RX, PIN_CAM_TX);
     }
     s_cam_got_result = false;
     s_cam_payload_len = 0;
@@ -169,23 +153,24 @@ void sub_camera_trigger(void) {
     dbg_println("[CAM] TRIG high");
 }
 
-// 解析环形缓冲中的一帧；成功则把载荷存入 s_cam_payload 并返回 true
+// 从 Serial2 解析一帧；成功则把载荷存入 s_cam_payload 并返回 true。
+// 数据没到齐时直接返回，不消费半帧（轮询式，避免丢字节）。
 static bool cam_parse(void) {
-    uint8_t b;
-    while (cam_ring_read(&b)) {
-        if (b != CAM_FRAME_HEADER) continue;          // 找帧头
-        uint8_t type = 0, len = 0;
-        if (!cam_ring_read(&type)) return false;      // 帧不完整，等下次
-        if (!cam_ring_read(&len)) return false;
+    while (Serial2.available() > 0) {
+        // 找帧头
+        if ((uint8_t)Serial2.peek() != CAM_FRAME_HEADER) { Serial2.read(); continue; }
+        if (Serial2.available() < 3) return false;             // 头还没齐
+
+        uint8_t hdr[3];
+        Serial2.readBytes(hdr, 3);                             // 0x5A, type, len
+        uint8_t type = hdr[1], len = hdr[2];
         if (type != CAM_TYPE_RESULT || len == 0 || len > CARD_DATA_MAX) continue;
+        if (Serial2.available() < (int)len + 1) return false;   // 数据+校验还没齐
+
         uint8_t data[CARD_DATA_MAX];
-        bool complete = true;
-        for (uint8_t i = 0; i < len; i++) {
-            if (!cam_ring_read(&data[i])) { complete = false; break; }
-        }
-        if (!complete) return false;
-        uint8_t sum = 0;
-        if (!cam_ring_read(&sum)) return false;
+        Serial2.readBytes(data, len);
+        uint8_t sum = (uint8_t)Serial2.read();
+
         uint8_t calc = (uint8_t)(type + len);
         for (uint8_t i = 0; i < len; i++) calc = (uint8_t)(calc + data[i]);
         if (calc != sum) {
@@ -270,16 +255,17 @@ void busy_motor_stop(void) {
 // 电机自检：正转 300ms → 刹车 MOTOR_BRAKE_MS → 反转 300ms → 停（开机与 mtest 命令用）
 // 如果电机完全不转，说明引脚 / 驱动供电 / 接线有问题
 void motor_self_test(void) {
-    dbg_println("[MOT] self-test: forward 300ms...");
+    // 先动电机再打印：即使调试串口异常也不会卡住自检动作
     busy_motor_start();
+    dbg_println("[MOT] self-test: forward 300ms...");
     delay(300);
     if (MOTOR_BRAKE_MS > 0) {
-        dbg_println("[MOT] self-test: brake...");
         busy_motor_brake();
+        dbg_println("[MOT] self-test: brake...");
         delay(MOTOR_BRAKE_MS);
     }
-    dbg_println("[MOT] self-test: reverse 300ms...");
     busy_motor_start_reverse();
+    dbg_println("[MOT] self-test: reverse 300ms...");
     delay(300);
     busy_motor_stop();
     dbg_println("[MOT] self-test done (motor should have twitched twice)");

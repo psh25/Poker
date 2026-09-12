@@ -52,7 +52,7 @@ DealerMachine/
 - **发牌方式（顺序 / 随机）**：与方案互斥独立，IDLE 下**长按编码器**切换，屏幕顶部 `Seq`/`Rand` 徽标常驻显示。顺序=按堆依次发（弃牌留在牌源）；随机=硬件随机数洗牌后按洗牌结果**无序**转堆发牌（整副牌全部发出，多余进弃牌堆）。
 - **摄像头时序**：上一张发牌成功后，底板发 `CMD_CAM_CAPTURE` → 子板拉高 `PIN_CAM_TRIG` 截图 → 转盘转到目标牌堆 → 等待识别完成 → 再下发发牌指令。子板**只接收、不主动取图**：摄像头回传帧经 UART 中断入环形缓冲，主循环解析后发 `EVT_CARD_VALUE`；未回传时按“发空牌”继续（调试路径）。
 - **子板心跳**：底板每 1s 发 `CMD_STATUS_QUERY`，子板回 `EVT_STATUS`；3s 内无任何子板帧判定掉线，底板 CLI `subboard` 可查询。
-- **屏幕显示**：事件驱动（队列触发），非轮询，只展示不决策。
+- **屏幕显示**：事件驱动（队列触发），非轮询，**只展示不决策**——菜单选中项 / 是否确认 / 发牌方式都存在 `deal_selection` 模块（互斥量保护），显示层不再保存业务状态。
 
 ### 底板任务与优先级
 
@@ -75,9 +75,10 @@ DealerMachine/
 | `include/pins_config.h` | IO 映射 |
 | `include/app_config.h` | 优先级、栈大小、队列容量、时序常量 |
 | `include/deal_config.h` / `src/deal_config.cpp` | 牌局参数预置表 + 自定义参数 → 发牌计划 |
+| `include/deal_selection.h` / `src/deal_selection.cpp` | 发牌选择状态（方案 / 是否确认 / 顺序或随机），带互斥量快照 |
 | `include/itc.h` / `src/itc.cpp` | 队列、信号量、互斥量、事件组创建 |
 | `src/tasks.cpp` | 7 个任务骨架 |
-| `src/display.cpp` / `include/display.h` | 屏幕显示（IDLE 屏：未选择/已选方案 + CONFIRM 按钮） |
+| `src/display.cpp` / `include/display.h` | 屏幕显示（只按显示命令绘制：IDLE 屏、发牌进度、错误、GAME_ACTIVE） |
 | `src/state_machine.cpp` | 状态机与转移逻辑 |
 | `src/protocol.cpp` | 子板 UART 协议（帧解析/发送/事件分发） |
 | `src/hardware.cpp` | 硬件初始化、中断、步进驱动（AccelStepper）/归零/自检占位 |

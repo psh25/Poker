@@ -22,7 +22,7 @@ typedef enum {
 typedef struct {
     display_cmd_type_t type;
     union {
-        struct { uint8_t selectedIndex; uint8_t confirmed; char menuList[4][16]; } menu;
+        struct { uint8_t selectedIndex; uint8_t confirmed; uint8_t orderRandom; } menu;
         struct {
             uint8_t progress;                       // 0~100
             uint8_t scheme;                         // 0-based 方案索引
@@ -46,17 +46,10 @@ void display_init(void);
 // 显示任务收到命令后分发绘制
 void display_handle_command(const display_cmd_t *cmd);
 
-// 当前选中的方案索引（编码器任务更新，状态机发送菜单时使用）
-void display_set_selected(uint8_t index);
-uint8_t display_get_selected(void);
-
-// 是否已通过按下确认方案（两段式：先确认方案，再按 CONFIRM 发牌）
-void display_set_confirmed(bool on);
-bool display_get_confirmed(void);
-
-// 发牌方式（顺序/随机）：IDLE 屏顶部常驻显示，IDLE 下长按编码器切换
-void display_set_order_random(bool randomMode);
-bool display_get_order_random(void);
+// 把当前"发牌选择状态"（方案/是否确认/顺序或随机）刷到屏幕上。
+// 业务状态存在 deal_selection 模块里，显示层只负责画——调用方不需要自己拼显示命令。
+void display_send_menu(void);   // 增量刷新（旋转/确认/切换发牌方式时用）
+void display_send_idle(void);   // 整屏重绘 IDLE（进入 IDLE 状态、屏幕测试用）
 
 // 发送一条调试提示（显示任务会停留约 0.7s 再继续）
 void send_display_debug(const char *msg);

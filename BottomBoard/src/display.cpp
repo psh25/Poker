@@ -12,6 +12,7 @@
 
 #include "app_config.h"
 #include "deal_config.h"
+#include "deal_selection.h"
 #include "itc.h"
 #include "display.h"
 #include "hardware.h"
@@ -22,37 +23,9 @@ static TFT_eSPI tft;
 #define DISPLAY_DIAG_COLORS 1
 
 // 方案名由 deal_config 统一提供（预置游戏 + Custom）
-
-static uint8_t g_selected = 0;   // 当前选中的方案索引
-
-void display_set_selected(uint8_t index) {
-    g_selected = index;
-}
-
-uint8_t display_get_selected(void) {
-    return g_selected;
-}
-
-static uint8_t g_confirmed = 0;  // 是否已通过按下确认方案（0=未选择，顶部显示 -）
-
-void display_set_confirmed(bool on) {
-    g_confirmed = on ? 1 : 0;
-}
-
-bool display_get_confirmed(void) {
-    return g_confirmed != 0;
-}
-
-// 发牌方式：0=顺序（Seq），1=随机（Rand）
-static uint8_t g_orderRandom = 0;
-
-void display_set_order_random(bool randomMode) {
-    g_orderRandom = randomMode ? 1 : 0;
-}
-
-bool display_get_order_random(void) {
-    return g_orderRandom != 0;
-}
+//
+// 菜单选中项 / 是否已确认 / 发牌方式 都存在 deal_selection 模块里（业务状态），
+// 显示层只按收到的显示命令绘制，不再自己保存这些状态。
 
 void display_init(void) {
     tft.init();
@@ -110,7 +83,7 @@ static void draw_menu(uint8_t selectedIndex) {
 }
 
 // IDLE 屏顶部：已确认显示 “Selected: N”，未确认显示 “Selected: -”
-static void draw_idle_header(uint8_t selectedIndex, uint8_t confirmed) {
+static void draw_idle_header(uint8_t selectedIndex, uint8_t confirmed, uint8_t orderRandom) {
     tft.fillRect(8, 1, 144, 9, TFT_BLACK);      // 清掉旧数字
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
     tft.setTextSize(1);
@@ -122,11 +95,11 @@ static void draw_idle_header(uint8_t selectedIndex, uint8_t confirmed) {
         tft.print("Selected: -");
     }
     // 发牌方式徽标：Seq（顺序）/ Rand（随机），IDLE 下长按编码器切换
-    uint16_t obg = g_orderRandom ? TFT_PURPLE : TFT_DARKGREEN;
+    uint16_t obg = orderRandom ? TFT_PURPLE : TFT_DARKGREEN;
     tft.fillRoundRect(78, 1, 34, 9, 2, obg);
     tft.setTextColor(TFT_WHITE, obg);
     tft.setCursor(81, 2);
-    tft.print(g_orderRandom ? "Rand" : "Seq");
+    tft.print(orderRandom ? "Rand" : "Seq");
     // 方案多于 4 个时显示页码（如 1/2）
     if (SCHEME_COUNT > MENU_ROWS) {
         tft.setTextColor(TFT_CYAN, TFT_BLACK);
@@ -152,11 +125,11 @@ static void draw_confirm_button(uint8_t confirmed) {
 }
 
 // IDLE 屏幕：顶部（未选择/已选方案）+ 方案列表 + 底部确认按钮
-static void draw_idle(uint8_t selectedIndex, uint8_t confirmed) {
+static void draw_idle(uint8_t selectedIndex, uint8_t confirmed, uint8_t orderRandom) {
     tft.fillScreen(TFT_BLACK);
 
     s_menu_offset = menu_offset_for(selectedIndex);
-    draw_idle_header(selectedIndex, confirmed);
+    draw_idle_header(selectedIndex, confirmed, orderRandom);
     tft.drawFastHLine(8, 11, 144, TFT_WHITE);
 
     draw_menu(selectedIndex);
@@ -167,15 +140,15 @@ static void draw_idle(uint8_t selectedIndex, uint8_t confirmed) {
 }
 
 // 增量更新：顶部 + 确认按钮 + 高亮行（旋转 / 确认 / 取消时调用）
-static void draw_select(uint8_t selectedIndex, uint8_t confirmed) {
+static void draw_select(uint8_t selectedIndex, uint8_t confirmed, uint8_t orderRandom) {
     uint8_t newOffset = menu_offset_for(selectedIndex);
     if (newOffset != s_menu_offset) {
         s_menu_offset = newOffset;
-        draw_idle(selectedIndex, confirmed);   // 需要滚动 → 整屏重绘
+        draw_idle(selectedIndex, confirmed, orderRandom);   // 需要滚动 → 整屏重绘
         return;
     }
     if (s_screen == SCREEN_IDLE) {
-        draw_idle_header(selectedIndex, confirmed);
+        draw_idle_header(selectedIndex, confirmed, orderRandom);
         draw_confirm_button(confirmed);
     }
     if (selectedIndex != s_drawn) {
@@ -243,10 +216,12 @@ static void draw_game_active(const display_cmd_t *cmd) {
 void display_handle_command(const display_cmd_t *cmd) {
     switch (cmd->type) {
     case DISPLAY_CMD_IDLE:
-        draw_idle(cmd->payload.menu.selectedIndex, cmd->payload.menu.confirmed);
+        draw_idle(cmd->payload.menu.selectedIndex, cmd->payload.menu.confirmed,
+                  cmd->payload.menu.orderRandom);
         break;
     case DISPLAY_CMD_SELECT:
-        draw_select(cmd->payload.menu.selectedIndex, cmd->payload.menu.confirmed);
+        draw_select(cmd->payload.menu.selectedIndex, cmd->payload.menu.confirmed,
+                    cmd->payload.menu.orderRandom);
         break;
 
     case DISPLAY_CMD_DEALING:
@@ -285,6 +260,22 @@ void send_display_debug(const char *msg) {
     strncpy(cmd.payload.debug.msg, msg, sizeof(cmd.payload.debug.msg) - 1);
     send_display_command(&cmd);
 }
+
+// 把当前发牌选择状态刷到 IDLE 屏（调用方改完 deal_selection 后调这一个函数即可）
+static void send_menu_cmd(display_cmd_type_t type) {
+    deal_selection_t sel;
+    deal_selection_snapshot(&sel);
+
+    display_cmd_t cmd = {};
+    cmd.type = type;
+    cmd.payload.menu.selectedIndex = sel.scheme;
+    cmd.payload.menu.confirmed = sel.confirmed ? 1 : 0;
+    cmd.payload.menu.orderRandom = sel.orderRandom ? 1 : 0;
+    send_display_command(&cmd);
+}
+
+void display_send_menu(void) { send_menu_cmd(DISPLAY_CMD_SELECT); }
+void display_send_idle(void) { send_menu_cmd(DISPLAY_CMD_IDLE); }
 
 bool send_display_command(const display_cmd_t *cmd) {
     // 非阻塞发送；队列满丢弃（UI 只关心最终状态，快速旋转时中间态可丢）

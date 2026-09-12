@@ -18,6 +18,7 @@ QueueHandle_t xDisplayQueue = NULL;
 SemaphoreHandle_t xDealSemaphore = NULL;
 SemaphoreHandle_t xDeckDataMutex = NULL;
 SemaphoreHandle_t xStateMutex = NULL;
+SemaphoreHandle_t xSelectionMutex = NULL;
 
 EventGroupHandle_t xStateEventGroup = NULL;
 
@@ -30,12 +31,13 @@ void create_itc(void) {
     xDealSemaphore    = xSemaphoreCreateBinary();
     xDeckDataMutex    = xSemaphoreCreateMutex();
     xStateMutex       = xSemaphoreCreateMutex();
+    xSelectionMutex   = xSemaphoreCreateMutex();
 
     xStateEventGroup  = xEventGroupCreate();
 
     bool ok = (xBluetoothRxQueue && xSubboardRxQueue && xSubboardTxQueue &&
                xDisplayQueue && xDealSemaphore &&
-               xDeckDataMutex && xStateMutex && xStateEventGroup);
+               xDeckDataMutex && xStateMutex && xSelectionMutex && xStateEventGroup);
     if (!ok) {
         Serial.println("[FATAL] 内核对象创建失败");
         while (1) { vTaskDelay(pdMS_TO_TICKS(1000)); }

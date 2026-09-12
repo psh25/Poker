@@ -21,6 +21,7 @@
 
 #include "app_config.h"
 #include "deal_config.h"
+#include "deal_selection.h"
 #include "itc.h"
 #include "tasks.h"
 #include "state_machine.h"
@@ -114,37 +115,28 @@ void host_notify_state(uint8_t state) {
     evt.type = HOST_EVT_STATE;
     evt.len = 3;
     evt.data[0] = state;
-    evt.data[1] = display_get_selected();
-    evt.data[2] = display_get_confirmed() ? 1 : 0;
+    evt.data[1] = deal_selection_get_scheme();
+    evt.data[2] = deal_selection_get_confirmed() ? 1 : 0;
     host_send(&evt);
 }
 
 static void host_action_select(uint8_t idx) {
     if (state_get_current() != STATE_IDLE) { Serial.println("[HOST] select: 仅 IDLE 有效"); return; }
     if (idx >= SCHEME_COUNT) { Serial.println("[HOST] select: 越界"); return; }
-    display_set_selected(idx);
-    display_set_confirmed(false);
-    display_cmd_t cmd = {};
-    cmd.type = DISPLAY_CMD_SELECT;
-    cmd.payload.menu.selectedIndex = idx;
-    cmd.payload.menu.confirmed = 0;
-    send_display_command(&cmd);
+    deal_selection_set_scheme(idx);
+    display_send_menu();      // 改选会清掉 confirmed，这里统一刷新菜单屏
 }
 
 static void host_action_confirm(void) {
     if (state_get_current() != STATE_IDLE) { Serial.println("[HOST] confirm: 仅 IDLE 有效"); return; }
-    if (display_get_confirmed()) { Serial.println("[HOST] confirm: 已确认，再次发牌请发 0x01"); return; }
-    display_set_confirmed(true);
-    display_cmd_t cmd = {};
-    cmd.type = DISPLAY_CMD_SELECT;
-    cmd.payload.menu.selectedIndex = display_get_selected();
-    cmd.payload.menu.confirmed = 1;
-    send_display_command(&cmd);
+    if (deal_selection_get_confirmed()) { Serial.println("[HOST] confirm: 已确认，再次发牌请发 0x01"); return; }
+    deal_selection_set_confirmed(true);
+    display_send_menu();
 }
 
 static void host_action_deal_start(void) {
     if (state_get_current() != STATE_IDLE) { Serial.println("[HOST] deal: 仅 IDLE 可启动"); return; }
-    if (!display_get_confirmed()) {
+    if (!deal_selection_get_confirmed()) {
         Serial.println("[HOST] deal: 方案未确认（先 select + confirm）");
         return;
     }
@@ -303,7 +295,7 @@ static void sub_debug_cli_process(const char *line) {
     }
     if (strcmp(line, "confirm") == 0) {
         host_action_confirm();
-        if (state_get_current() == STATE_IDLE && display_get_confirmed()) {
+        if (state_get_current() == STATE_IDLE && deal_selection_get_confirmed()) {
             Serial.println("[CLI] confirm（0x11）：方案已确认，再发 dealstart/0x01 开始发牌");
         }
         return;
@@ -315,9 +307,9 @@ static void sub_debug_cli_process(const char *line) {
         for (int i = 0; i < DECK_COUNT; i++) {
             Serial.printf("  deck %d -> %d\n", i + 1, (int)kDeckAngles[i]);
         }
-        uint8_t sel = display_get_selected();
+        uint8_t sel = deal_selection_get_scheme();
         char err[48];
-        if (deal_build_plan(&s_cliPlan, sel, display_get_order_random() ? DEAL_ORDER_RANDOM
+        if (deal_build_plan(&s_cliPlan, sel, deal_selection_get_order_random() ? DEAL_ORDER_RANDOM
                                                                         : DEAL_ORDER_SEQUENTIAL,
                             err, sizeof(err))) {
             deal_plan_print(sel, &s_cliPlan, deal_scheme_params(sel));
@@ -342,7 +334,7 @@ static void sub_debug_cli_process(const char *line) {
     // game ...：参数驱动牌局（预置选择 / 自定义参数 / 查看发牌组）
     if (strcmp(line, "game") == 0 || strcmp(line, "game list") == 0) {
         Serial.printf("[CLI] deal order = %s（IDLE 下长按编码器切换）\n",
-                      display_get_order_random() ? "RANDOM" : "SEQUENTIAL");
+                      deal_selection_get_order_random() ? "RANDOM" : "SEQUENTIAL");
         Serial.println("[CLI] game list:");
         for (uint8_t i = 0; i < SCHEME_COUNT; i++) {
             const deal_params_t *p = deal_scheme_params(i);
@@ -367,9 +359,9 @@ static void sub_debug_cli_process(const char *line) {
         return;
     }
     if (strcmp(line, "game info") == 0) {
-        uint8_t sel = display_get_selected();
+        uint8_t sel = deal_selection_get_scheme();
         char err[48];
-        if (deal_build_plan(&s_cliPlan, sel, display_get_order_random() ? DEAL_ORDER_RANDOM
+        if (deal_build_plan(&s_cliPlan, sel, deal_selection_get_order_random() ? DEAL_ORDER_RANDOM
                                                                         : DEAL_ORDER_SEQUENTIAL,
                             err, sizeof(err))) {
             deal_plan_print(sel, &s_cliPlan, deal_scheme_params(sel));
@@ -400,7 +392,7 @@ static void sub_debug_cli_process(const char *line) {
     // game order [seq|rand]：查看/设置发牌方式（与方案无关，同 IDLE 长按）
     if (strcmp(line, "game order") == 0) {
         Serial.printf("[CLI] deal order = %s\n",
-                      display_get_order_random() ? "RANDOM" : "SEQUENTIAL");
+                      deal_selection_get_order_random() ? "RANDOM" : "SEQUENTIAL");
         return;
     }
     if (strncmp(line, "game order ", 11) == 0) {
@@ -409,12 +401,8 @@ static void sub_debug_cli_process(const char *line) {
         if      (strcmp(p, "seq") == 0 || strcmp(p, "sequential") == 0) rnd = false;
         else if (strcmp(p, "rand") == 0 || strcmp(p, "random") == 0)    rnd = true;
         else { Serial.println("[CLI] game order: seq | rand"); return; }
-        display_set_order_random(rnd);
-        display_cmd_t cmd = {};
-        cmd.type = DISPLAY_CMD_SELECT;
-        cmd.payload.menu.selectedIndex = display_get_selected();
-        cmd.payload.menu.confirmed = display_get_confirmed() ? 1 : 0;
-        send_display_command(&cmd);
+        deal_selection_set_order_random(rnd);
+        display_send_menu();
         Serial.printf("[CLI] deal order -> %s\n", rnd ? "RANDOM" : "SEQUENTIAL");
         return;
     }
@@ -444,11 +432,11 @@ static void sub_debug_cli_process(const char *line) {
             else { Serial.printf("[CLI] 未知参数 %s\n", key); return; }
         }
         if (!totalGiven) params.totalCards = deal_params_required(&params);
-        if (forceRandom) display_set_order_random(true);
+        if (forceRandom) deal_selection_set_order_random(true);
 
         // 先在临时缓冲里试算：成功才写入 Custom 槽位
         char err[48];
-        bool ok = display_get_order_random()
+        bool ok = deal_selection_get_order_random()
                       ? deal_plan_build_random(&s_cliPlan, "Custom", &params, err, sizeof(err))
                       : deal_plan_build_sequential(&s_cliPlan, "Custom", &params, err, sizeof(err));
         if (!ok) { Serial.printf("[CLI] 设置失败：%s\n", err); return; }
@@ -459,7 +447,7 @@ static void sub_debug_cli_process(const char *line) {
                       (unsigned)params.players, (unsigned)params.handCards,
                       (unsigned)params.publicCards, (unsigned)params.bottomCards,
                       (unsigned)params.totalCards,
-                      display_get_order_random() ? "RANDOM" : "SEQUENTIAL");
+                      deal_selection_get_order_random() ? "RANDOM" : "SEQUENTIAL");
         deal_plan_print(DEAL_INDEX_CUSTOM, &s_cliPlan, deal_scheme_params_custom());
         return;
     }
@@ -488,7 +476,7 @@ static void sub_debug_cli_process(const char *line) {
             // 发牌屏由发牌任务刷新，CLI 强制进入时补一张测试屏
             display_cmd_t cmd = {};
             cmd.type = DISPLAY_CMD_DEALING;
-            cmd.payload.dealing.scheme = display_get_selected();
+            cmd.payload.dealing.scheme = deal_selection_get_scheme();
             cmd.payload.dealing.deck = 1;
             cmd.payload.dealing.progress = 0;
             strncpy(cmd.payload.dealing.status, "setstate test", sizeof(cmd.payload.dealing.status) - 1);
@@ -570,11 +558,7 @@ static void sub_debug_cli_process(const char *line) {
 
     // 屏幕测试命令
     if (strcmp(line, "idle") == 0) {
-        display_cmd_t cmd = {};
-        cmd.type = DISPLAY_CMD_IDLE;
-        cmd.payload.menu.selectedIndex = display_get_selected();
-        cmd.payload.menu.confirmed = display_get_confirmed() ? 1 : 0;
-        send_display_command(&cmd);
+        display_send_idle();
         Serial.println("[CLI] idle screen sent");
         return;
     }
@@ -589,7 +573,7 @@ static void sub_debug_cli_process(const char *line) {
         int pct = atoi(line + 8);
         display_cmd_t cmd = {};
         cmd.type = DISPLAY_CMD_DEALING;
-        cmd.payload.dealing.scheme = display_get_selected();
+        cmd.payload.dealing.scheme = deal_selection_get_scheme();
         cmd.payload.dealing.deck = 1;
         cmd.payload.dealing.progress = (uint8_t)pct;
         strncpy(cmd.payload.dealing.status, "screen test", sizeof(cmd.payload.dealing.status) - 1);
@@ -716,10 +700,6 @@ static bool deal_wait_evt_core(QueueHandle_t q, uint8_t want, uint32_t timeoutMs
     return false;
 }
 
-static bool deal_wait_evt(QueueHandle_t q, uint8_t want, uint32_t timeoutMs, proto_frame_t *out) {
-    return deal_wait_evt_core(q, want, timeoutMs, out, NULL);
-}
-
 // 底盘转盘转到目标牌堆（AccelStepper 实际转动；超时返回 false）
 static bool rotate_to_deck(uint8_t deck) {
     Serial.printf("[DEAL] rotate to deck %u (angle %d deg)\n",
@@ -750,13 +730,13 @@ void vDealTask(void *pv) {
         s_dealt_count = 0;
         s_deal_progress = 0;
         s_deal_deck = 0;
-        s_deal_scheme = display_get_selected();
+        s_deal_scheme = deal_selection_get_scheme();
         busy_deal_step("deal_start");
 
         // 按“方案参数 + 当前发牌方式（顺序/随机）”现场生成计划
         char perr[48];
         if (!deal_build_plan(&s_runningPlan, s_deal_scheme,
-                             display_get_order_random() ? DEAL_ORDER_RANDOM
+                             deal_selection_get_order_random() ? DEAL_ORDER_RANDOM
                                                         : DEAL_ORDER_SEQUENTIAL,
                              perr, sizeof(perr))) {
             deal_add_error(perr);
@@ -971,11 +951,11 @@ void vEncoderTask(void *pv) {
                 }
 
                 if (s == STATE_IDLE) {
-                    uint8_t sel = display_get_selected();
-                    if (!display_get_confirmed()) {
+                    uint8_t sel = deal_selection_get_scheme();
+                    if (!deal_selection_get_confirmed()) {
                         // 第一次按下：确认当前高亮方案（顶部显示，不进入发牌）
                         Serial.printf("[ENC] scheme %d selected\n", sel + 1);
-                        display_set_confirmed(true);
+                        deal_selection_set_confirmed(true);
                         display_cmd_t cmd = {};
                         cmd.type = DISPLAY_CMD_SELECT;
                         cmd.payload.menu.selectedIndex = sel;
@@ -1012,15 +992,11 @@ void vEncoderTask(void *pv) {
                 xEventGroupSetBits(xStateEventGroup, BIT_RESET);
             } else if (ls == STATE_IDLE) {
                 sw_long_done = true;
-                bool rnd = !display_get_order_random();
-                display_set_order_random(rnd);
+                bool rnd = !deal_selection_get_order_random();
+                deal_selection_set_order_random(rnd);
                 Serial.printf("[ENC] long press: deal order = %s\n",
                               rnd ? "RANDOM" : "SEQUENTIAL");
-                display_cmd_t cmd = {};
-                cmd.type = DISPLAY_CMD_SELECT;
-                cmd.payload.menu.selectedIndex = display_get_selected();
-                cmd.payload.menu.confirmed = display_get_confirmed() ? 1 : 0;
-                send_display_command(&cmd);
+                display_send_menu();
             }
         }
 
@@ -1039,28 +1015,18 @@ void vEncoderTask(void *pv) {
                 if (quad_accum >= 4) {
                     quad_accum = 0;
                     if (state_get_current() == STATE_IDLE) {   // 交互仅 IDLE 生效
-                        uint8_t sel = (uint8_t)((display_get_selected() + 1) % SCHEME_COUNT);
+                        uint8_t sel = (uint8_t)((deal_selection_get_scheme() + 1) % SCHEME_COUNT);
                         Serial.printf("[ENC] rot +1 sel=%d\n", sel + 1);
-                        display_set_selected(sel);
-                        display_set_confirmed(false);   // 旋转改变选择 → 回到未确认
-                        display_cmd_t cmd = {};
-                        cmd.type = DISPLAY_CMD_SELECT;
-                        cmd.payload.menu.selectedIndex = sel;
-                        cmd.payload.menu.confirmed = 0;
-                        send_display_command(&cmd);
+                        deal_selection_set_scheme(sel);        // 旋转改变选择 → 自动回到未确认
+                        display_send_menu();
                     }
                 } else if (quad_accum <= -4) {
                     quad_accum = 0;
                     if (state_get_current() == STATE_IDLE) {   // 交互仅 IDLE 生效
-                        uint8_t sel = (uint8_t)((display_get_selected() + SCHEME_COUNT - 1) % SCHEME_COUNT);
+                        uint8_t sel = (uint8_t)((deal_selection_get_scheme() + SCHEME_COUNT - 1) % SCHEME_COUNT);
                         Serial.printf("[ENC] rot -1 sel=%d\n", sel + 1);
-                        display_set_selected(sel);
-                        display_set_confirmed(false);   // 旋转改变选择 → 回到未确认
-                        display_cmd_t cmd = {};
-                        cmd.type = DISPLAY_CMD_SELECT;
-                        cmd.payload.menu.selectedIndex = sel;
-                        cmd.payload.menu.confirmed = 0;
-                        send_display_command(&cmd);
+                        deal_selection_set_scheme(sel);        // 旋转改变选择 → 自动回到未确认
+                        display_send_menu();
                     }
                 }
             }

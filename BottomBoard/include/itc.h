@@ -30,6 +30,7 @@ extern SemaphoreHandle_t xDealSemaphore;     // 发牌就绪，唤醒发牌任�
 // ---- 互斥量 ----
 extern SemaphoreHandle_t xDeckDataMutex;     // 牌堆数据
 extern SemaphoreHandle_t xStateMutex;        // 全局状态变量
+extern SemaphoreHandle_t xSelectionMutex;    // 发牌选择状态（方案/确认/发牌方式）
 
 // ---- 事件组 ----
 extern EventGroupHandle_t xStateEventGroup;

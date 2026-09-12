@@ -11,6 +11,7 @@
 #include "itc.h"
 #include "state_machine.h"
 #include "display.h"
+#include "deal_selection.h"
 #include "hardware.h"
 #include "tasks.h"
 
@@ -40,10 +41,15 @@ void state_transition_to(system_state_t next) {
     cmd.type = (display_cmd_type_t)0xFF;   // 默认不发送
     switch (next) {
     case STATE_IDLE:
-        display_set_confirmed(false);   // 进入 IDLE 一律视为“未选择”
-        cmd.type = DISPLAY_CMD_IDLE;
-        cmd.payload.menu.selectedIndex = display_get_selected();   // 保留当前选中项
-        cmd.payload.menu.confirmed = 0;
+        deal_selection_set_confirmed(false);   // 进入 IDLE 一律视为“未选择”
+        {
+            deal_selection_t sel;
+            deal_selection_snapshot(&sel);
+            cmd.type = DISPLAY_CMD_IDLE;
+            cmd.payload.menu.selectedIndex = sel.scheme;           // 保留当前选中项
+            cmd.payload.menu.confirmed = 0;
+            cmd.payload.menu.orderRandom = sel.orderRandom ? 1 : 0;
+        }
         break;
     case STATE_DEALING:
         // 发牌界面由发牌任务负责刷新，避免“开始”屏覆盖发牌错误信息

@@ -44,6 +44,11 @@ v3.0（2026-09-12）修订（健壮性 + 时序对齐）：
 ⑤ **启停原子性**：发牌任务开工前等状态机真正进入 `DEALING`（最多 500ms），避免"状态还没切、发牌已开始"；
 ⑥ **时序对齐**：底板等 `EVT_CARD_OUT`/`EVT_DEAL_DONE` 的超时由 5s 放宽到 8s（覆盖子板"卡牌+撤回+重试"最坏约 5.7s）；底盘每次到位后增加 `CHASSIS_MOVE_SETTLE_MS`(100ms) 稳定等待，避免转盘还在振动就发牌；删除未使用的 `ROTATE_WAIT_MS` / `SUB_RESP_TIMEOUT_MS` / 子板 `CAMERA_TIMEOUT_MS`。
 
+v3.1（2026-09-12）修订（结构整理）：
+① **显示层真正"只展示不决策"**：菜单选中项 / 是否已确认 / 发牌方式从 `display.cpp` 搬到新模块 `deal_selection`（`xSelectionMutex` 保护、提供一致性快照），显示层只按显示命令绘制；同时把散落在编码器/CLI/BLE/状态机里重复拼装菜单显示命令的代码统一成 `display_send_menu()` / `display_send_idle()`。
+② 清理死代码：未使用的 `deal_wait_evt()` 包装、`menuList` 字段。
+③ `hall_homing()` 明确为"霍尔未接入，以开机位置作为转盘零点"，并保留后续接入时的实现说明。
+
 与 v1 的逐项差异见 [architecture_v2_diff.md](architecture_v2_diff.md)；子板详细设计见 [subboard_architecture.md](subboard_architecture.md)。
 
 ---

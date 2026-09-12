@@ -34,7 +34,6 @@ void busy_motor_stop(void);         // 停止（滑行）
 void motor_self_test(void);         // 电机自检：正转/反转各 300ms（开机与 mtest 命令用）
 
 // ---- 占位函数（TODO：按架构实现具体逻辑）----
-void busy_camera_capture(uint8_t *cardData, uint8_t *cardLen);  // 识别牌面，成功置 cardLen
 void busy_self_test(void);
 void busy_error_handle(uint8_t errorType);
 

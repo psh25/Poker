@@ -24,7 +24,6 @@ typedef enum {
     SUB_STATE_WAIT_GONE,        // 光电门模式：等“无牌”并确认牌完整通过
     SUB_STATE_RETRACT,          // 卡牌：反转撤回
     SUB_STATE_RETRACT_WAIT,     // 撤回后等门恢复“无牌”
-    SUB_STATE_CAM_CAPTURE,      // 保留（摄像头现由底板 CMD_CAM_CAPTURE 驱动，此状态暂不用）
     SUB_STATE_SEND_BACK,
     SUB_STATE_ERROR
 } sub_state_t;

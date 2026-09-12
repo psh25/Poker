@@ -29,6 +29,13 @@ static constexpr long kStepsPerTopRev = (long)(
 // 只有超时/故障才 disableOutputs() 并把该标志复位。
 static bool s_driverEnabled = false;
 
+// 中止请求：STOP/RESET 时置位，底盘运动循环与发牌任务都尽早退出
+static volatile bool s_motionAbort = false;
+
+void motion_abort_request(void) { s_motionAbort = true; }
+void motion_abort_clear(void)   { s_motionAbort = false; }
+bool motion_abort_requested(void) { return s_motionAbort; }
+
 void init_hardware(void) {
     // 输出
     pinMode(PIN_TMC_STEP, OUTPUT);
@@ -123,6 +130,11 @@ static bool chassis_run_relative(long delta) {
     uint32_t t0 = millis();
     while (g_chassis.distanceToGo() != 0) {
         g_chassis.run();        // 高频调用：内部按加速度/减速度更新转速并产 STEP 脉冲
+        if (s_motionAbort) {    // STOP/RESET：立即停脉冲，保持 EN 锁轴
+            Serial.println("[STEP] aborted by stop request");
+            g_chassis.setSpeed(0.0F);
+            return false;
+        }
         if ((uint32_t)(millis() - t0) > timeoutMs) {
             Serial.println("[STEP] rotate timeout");
             g_chassis.setSpeed(0.0F);
@@ -172,10 +184,6 @@ void self_test(void) {
 }
 
 // ================= 任务内占位函数（TODO：按架构实现）=================
-void busy_bluetooth(void) {
-    // TODO: BLE 初始化、小程序连接、选牌/查询指令解析、状态上报
-}
-
 void busy_subboard_event(uint8_t type, const uint8_t *data, uint8_t len) {
     // TODO: 按 EVT_*/ERROR_* 更新牌堆、进度、屏幕等
     (void)type; (void)data; (void)len;
@@ -184,16 +192,6 @@ void busy_subboard_event(uint8_t type, const uint8_t *data, uint8_t len) {
 void busy_deal_step(const char *step) {
     // TODO: 旋转到目标牌堆 / 下发发牌指令 / 等待事件 / 更新牌堆数据
     (void)step;
-}
-
-void busy_encoder(uint8_t kind) {
-    // TODO: 方案索引切换、确认、重置
-    (void)kind;
-}
-
-void busy_display(uint8_t cmdType) {
-    // TODO: 按 DISPLAY_CMD_* 调用 TFT_eSPI 绘制（架构 v2 附录 A）
-    (void)cmdType;
 }
 
 void busy_state_enter(uint8_t state) {

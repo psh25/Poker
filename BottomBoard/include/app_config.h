@@ -32,12 +32,9 @@
 #define STACK_MONITOR     3072
 
 // ================= 队列容量 =================
-#define QUEUE_ENCODER_LEN  10   // 编码器事件
-#define QUEUE_BT_RX_LEN    10   // 小程序指令
-#define QUEUE_BT_TX_LEN    20   // 待发送数据
-#define QUEUE_SUB_RX_LEN   20   // 子板上报事件
+#define QUEUE_BT_RX_LEN    10   // 小程序指令字节（蓝牙任务解析）
+#define QUEUE_SUB_RX_LEN   20   // 子板上报事件（牌面/出牌/错误统一走这里）
 #define QUEUE_SUB_TX_LEN   10   // 底板下发指令
-#define QUEUE_CAMERA_LEN   20   // 牌面识别结果
 #define QUEUE_DISPLAY_LEN  5    // 屏幕显示命令（事件驱动）
 
 // ================= 发牌方案 / 牌堆 =================

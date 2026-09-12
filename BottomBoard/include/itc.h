@@ -19,18 +19,13 @@ typedef struct {
 } bt_msg_t;
 
 // ---- 队列 ----
-extern QueueHandle_t xEncoderQueue;      // 编码器事件 → 编码器处理任务
-extern QueueHandle_t xBluetoothRxQueue;  // 小程序指令 → 状态管理任务
-extern QueueHandle_t xBluetoothTxQueue;  // 待发送数据 → 蓝牙任务
+extern QueueHandle_t xBluetoothRxQueue;  // 小程序指令字节 → 蓝牙任务解析
 extern QueueHandle_t xSubboardRxQueue;   // 子板上报事件 → 发牌控制任务
 extern QueueHandle_t xSubboardTxQueue;   // 底板下发指令 → 子板通信任务
-extern QueueHandle_t xCameraQueue;       // 牌面识别结果 → 发牌/状态管理
 extern QueueHandle_t xDisplayQueue;      // 屏幕显示命令 → 显示任务
 
 // ---- 信号量 ----
 extern SemaphoreHandle_t xDealSemaphore;     // 发牌就绪，唤醒发牌任务
-extern SemaphoreHandle_t xCardDetectedSem;   // EVT_CARD_OUT 到达
-extern SemaphoreHandle_t xDeckReadySem;      // EVT_READY / 识别完成
 
 // ---- 互斥量 ----
 extern SemaphoreHandle_t xDeckDataMutex;     // 牌堆数据
@@ -41,9 +36,7 @@ extern EventGroupHandle_t xStateEventGroup;
 
 #define BIT_DEAL_COMPLETE      (1 << 0)  // 发牌完成
 #define BIT_DEAL_ERROR         (1 << 1)  // 发牌异常
-#define BIT_CONFIRM_RECEIVED   (1 << 2)  // 小程序确认收到牌堆信息
 #define BIT_RESET              (1 << 3)  // 重置 / 结束回 IDLE（GAME_ACTIVE 长按等）
-#define BIT_STATE_CHANGED      (1 << 4)  // 状态已切换（广播）
 #define BIT_DEAL_CONFIRM       (1 << 5)  // IDLE 下按下确认 → DEALING
 
 // CLI 调试：强制切换到指定状态（测试各状态显示/功能）

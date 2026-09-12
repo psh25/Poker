@@ -97,11 +97,10 @@ void proto_rx_feed(proto_rx_t *rx, uint8_t b) {
     }
 }
 
-// 事件分发（架构 v2 4.1 触发源调整）：
-//   EVT_CARD_OUT → xCardDetectedSem；EVT_READY → xDeckReadySem
-//   所有事件 → xSubboardRxQueue（发牌控制任务消费）
-//   EVT_CARD_VALUE 额外 → xCameraQueue（状态管理/显示）
-//   EVT_ACK / EVT_STATUS 仅调试与心跳用，不入业务队列
+// 事件分发：
+//   EVT_ACK / EVT_STATUS 仅调试与心跳用，不进业务队列；
+//   其余业务事件（牌面 / 出牌 / 单张完成 / 错误）统一进 xSubboardRxQueue，
+//   由发牌控制任务按 type 分发（避免错误事件进错队列导致等待方看不到）。
 static volatile uint32_t s_last_sub_rx_ms = 0;
 static volatile bool     s_sub_seen = false;
 
@@ -150,14 +149,7 @@ void proto_on_event(const proto_frame_t *frame) {
 
     busy_subboard_event(frame->type, frame->data, frame->len);
 
-    if (frame->type == EVT_CARD_OUT) {
-        xSemaphoreGive(xCardDetectedSem);
-    } else if (frame->type == EVT_READY) {
-        xSemaphoreGive(xDeckReadySem);
-    }
-
+    // 所有业务事件（牌面 / 出牌 / 单张完成 / 错误）统一进同一个队列，
+    // 由发牌任务按 type 分发——避免“错误进了另一个队列、等待方看不到”的问题。
     xQueueSend(xSubboardRxQueue, frame, 0);
-    if (frame->type == EVT_CARD_VALUE) {
-        xQueueSend(xCameraQueue, frame, 0);
-    }
 }

@@ -27,9 +27,8 @@ static uint32_t g_state_start_ms = 0;
 static uint8_t g_error = 0;
 static uint32_t s_deal_count = 0;   // 出牌计数（调试日志用）
 
-// 单卡数据缓冲（架构第六章：只保留当前一张牌，复用）
-static uint8_t s_card_data[CARD_DATA_MAX];
-static uint8_t s_card_len = 0;
+// 说明：牌面数据不再经过子板缓存——摄像头回传由 sub_camera_service() 直接翻译成
+// EVT_CARD_VALUE 上报（见 hardware.cpp），这里不再保留单卡缓冲。
 static uint8_t s_jam_count = 0;     // 本张牌已重试次数（撤回成功后重试，超出则报错）
 
 // ---- 自动连续发牌（调试用）----
@@ -95,7 +94,6 @@ void sub_state_handle_command(uint8_t cmd, const uint8_t *data, uint8_t len) {
     case CMD_STOP:
     case CMD_RESET:
         busy_motor_stop();
-        s_card_len = 0;
         g_error = 0;
         sub_auto_deal_stop();         // 停止/复位同时取消自动发牌
         g_state = SUB_STATE_IDLE;
@@ -282,21 +280,9 @@ void sub_state_run(void) {
         }
         break;
 
-    case SUB_STATE_CAM_CAPTURE:
-        if (s_card_len > 0) {
-            // 识别完成 → 回传
-            g_state = SUB_STATE_SEND_BACK;
-        } else if (now - g_state_start_ms >= CAMERA_TIMEOUT_MS) {
-            // 2s 超时 → 该张按未知牌处理并上报（架构 8.1）
-            proto_send(EVT_ERROR_CAM_FAIL, NULL, 0);
-            g_state = SUB_STATE_SEND_BACK;
-        }
-        break;
-
     case SUB_STATE_SEND_BACK:
         // 单张流程完成回传。牌面值（EVT_CARD_VALUE）改由摄像头回传路径在
         // “截图→识别”阶段发出（见 hardware.cpp sub_camera_service），此处不再重复发送。
-        s_card_len = 0;
         proto_send(EVT_DEAL_DONE, NULL, 0);
         s_deal_count++;
         s_jam_count = 0;                  // 这张成功完成：重置重试计数

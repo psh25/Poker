@@ -35,8 +35,6 @@ void state_transition_to(system_state_t next) {
     busy_state_enter((uint8_t)next);
     xSemaphoreGive(xStateMutex);
 
-    xEventGroupSetBits(xStateEventGroup, BIT_STATE_CHANGED);
-
     // 状态变化 → 屏幕（架构 v2 附录 A 生产者映射）
     display_cmd_t cmd = {};
     cmd.type = (display_cmd_type_t)0xFF;   // 默认不发送
@@ -65,7 +63,7 @@ void vStateManagerTask(void *pv) {
     for (;;) {
         EventBits_t bits = xEventGroupWaitBits(
             xStateEventGroup,
-            BIT_DEAL_COMPLETE | BIT_DEAL_ERROR | BIT_CONFIRM_RECEIVED |
+            BIT_DEAL_COMPLETE | BIT_DEAL_ERROR |
             BIT_RESET | BIT_DEAL_CONFIRM |
             BIT_TEST_IDLE | BIT_TEST_DEALING | BIT_TEST_ACTIVE,
             pdTRUE,        // 清除位

@@ -347,13 +347,6 @@ void motor_self_test(void) {
 }
 
 // ================= 占位函数（TODO：按架构实现具体逻辑）=================
-void busy_camera_capture(uint8_t *cardData, uint8_t *cardLen) {
-    // TODO: 触发摄像头拍照并识别牌面（花色、点数）
-    // 成功：填充 cardData 并设置 *cardLen > 0
-    // 失败：保持 *cardLen = 0（状态机会在 2s 后按未知牌处理）
-    (void)cardData; (void)cardLen;
-}
-
 void busy_self_test(void) {
     // 上电自检：先让电机正/反转各抖一下，肉眼确认驱动链路正常
     motor_self_test();

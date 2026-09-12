@@ -7,7 +7,8 @@
 
 ## 1. 物理层
 
-- **2 线 UART**：滑环 POS/NEG 各一线 + 共地（底板 POS=IO45 TX → 子板 POS=IO38 RX；底板 NEG=IO48 RX ← 子板 NEG=IO39 TX）。
+- **2 线 UART**：滑环 POS/NEG 各一线 + 共地。连接方式：POS 连 POS、NEG 连 NEG（方向：底板 POS=TX → 子板 POS=RX，底板 NEG=RX ← 子板 NEG=TX）。
+  **具体引脚号以两板 `include/pins_config.h` 为准**（底板已迁移到经典 ESP32，旧文档里的 ESP32-S3 引脚号已作废）。
 - 波特率 **115200**，8N1。
 - 电机启停干扰大：帧带 CRC8，校验失败整帧丢弃；数据包建议分小段发送。
 
@@ -176,7 +177,7 @@ help | dealstart | stop | statusquery | selftest | reset | camcapture | auto [n|
 - **收不到 ACK**：检查波特率（115200）、接线（POS/NEG 对应连接、共地）、两端 CRC 是否一致。
 - **乱码 / 丢帧**：检查串口是否被其他线占用。
 - **两板串口必须共地**：POS/NEG 之外还要连 GND，否则接收端会把噪声当数据（表现为持续乱码）。
-- **不要占用 UART0**：板间通信用专用引脚（底板 IO45/48、子板 IO38/39），GPIO43/44 是 CH340 调试口；烧录前先断开两板间的 RX/TX 线。
+- **不要占用调试串口**：板间通信用专用引脚（见两板 `pins_config.h`）；烧录前先断开两板间的 RX/TX 线。
 
 ## 10. 主机远程控制层（BLE 小程序 / 串口 CLI ↔ 底板）
 

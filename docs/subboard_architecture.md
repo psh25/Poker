@@ -59,7 +59,7 @@ v1.6（2026-09-12）修订：摄像头改为 OpenMV 原生 ASCII 文本行（`RE
 | 状态 | 含义 | 可执行操作 |
 |------|------|------------|
 | IDLE | 空闲，等待底板命令 | 解析串口命令、查询状态、自检 |
-| MOTOR_ON | 发牌电机启动中 | 启动电机，启动 500ms 超时计时 |
+| MOTOR_ON | 发牌电机启动中 | 启动电机正转；光电门模式下等 `MOTOR_STARTUP_MS` 后转 `WAIT_CARD` |
 | BRAKE | 正转→反转过渡 | 短刹车 `MOTOR_BRAKE_MS`（AIN1=AIN2=高，PWM=0；定时模式） |
 | WAIT_CARD | 光电门模式：等“有牌” | 轮询去抖后的电平；`PHOTO_TIMEOUT_MS` 仍未见牌 → 判卡 |
 | WAIT_GONE | 光电门模式：等“无牌”确认牌通过 | “无牌”稳定 `PHOTO_GONE_MS` → 上报 `EVT_CARD_OUT`；“有牌”持续 `PHOTO_JAM_MS` → 判卡 |
@@ -130,7 +130,7 @@ stateDiagram-v2
 
 ### 5.1 物理层
 
-- 通道：滑环串口（底板 POS=IO45 TX / NEG=IO48 RX 对端；子板 POS=IO38 RX / NEG=IO39 TX；POS 连 POS、NEG 连 NEG，**当前按 2 线普通 UART 处理**）。
+- 通道：滑环串口（POS 连 POS、NEG 连 NEG + 共地；**具体引脚见两板 `include/pins_config.h`**，当前按 2 线普通 UART 处理）。
 - **必须共地**：两板 POS/NEG 之外必须连接 GND；板间串口不要占用 UART0（GPIO43/44，CH340 调试口）。
 - 可靠性：**必须带 CRC 校验**；数据包分小段发送；校验失败丢弃并触发重传；长时间无通信按掉线处理。
 
@@ -151,7 +151,7 @@ stateDiagram-v2
 | `CMD_STATUS_QUERY` | — | 查询当前状态与计数 |
 | `CMD_SELF_TEST` | — | 触发自检（光敏、电机驱动、摄像头） |
 | `CMD_RESET` | — | 复位状态机（从 ERROR 恢复） |
-| `CMD_CAM_CAPTURE` | — | 触发一次摄像头截图（拉高 `PIN_CAM_TRIG` 一个脉冲） |
+| `CMD_CAM_CAPTURE` | — | 触发一次摄像头截图（把 `PIN_CAM_TRIG` **拉低**一个脉冲，OpenMV P6 下降沿触发） |
 
 ### 5.4 事件（子板 → 底板）
 
@@ -179,9 +179,9 @@ stateDiagram-v2
 
 ### 5.7 摄像头回传（子板只接收，不主动取图）
 
-子板收到 `CMD_CAM_CAPTURE` 后只做两件事：拉高 `PIN_CAM_TRIG`（`CAM_TRIG_PULSE_MS` 脉冲，摄像头检测上升沿），然后等待摄像头把识别结果**发回来**。
+子板收到 `CMD_CAM_CAPTURE` 后只做两件事：把 `PIN_CAM_TRIG` **拉低** `CAM_TRIG_PULSE_MS`（OpenMV P6 是**下降沿**触发，空闲为高），然后等待摄像头把识别结果**发回来**。
 
-接收链路：`Serial2`（`PIN_CAM_RX`，摄像头 TX → 子板 RX）`onReceive` 中断 → 环形缓冲（`CAM_RX_RING_SIZE`）→ 主循环 `sub_camera_service()` 解析 → 发 `EVT_CARD_VALUE`。
+接收链路：`Serial2`（`PIN_CAM_RX`，摄像头 TX → 子板 RX）由主循环 `sub_camera_service()` 在等待窗口内**轮询**并按行解析（不用 onReceive 中断，避免摄像头未接时浮空引脚触发中断风暴）→ 发 `EVT_CARD_VALUE`。
 
 回传帧格式（**占位**，模组确定后只需改 `hardware.cpp` 顶部与解析函数）：
 
@@ -205,7 +205,7 @@ byte3.. 数据   识别载荷（约定：花色 1B + 点数 1B，其余待定）
 
 | 检查类型 | 谁检测 | 上报时机 | 底板决策 |
 |----------|--------|----------|----------|
-| 光敏超时/卡牌 | 子板（500ms 定时器） | 立即发 `EVT_ERROR_CARD_JAM` | 标记疑似漏发，决定重试一次或暂停报警 |
+| 光电门超时/卡牌 | 子板（1.5s 定时器 + 反转撤回重试） | 撤回成功自动重试；失败才发 `EVT_ERROR_CARD_JAM` | 停机等复位，屏幕显示错误 |
 | 发牌电机堵转 | 子板（电流检测/超时） | 立即发 `EVT_ERROR_MOTOR_STALL` | 停止或急停，进入错误状态 |
 | 摄像头识别失败 | 子板（2s 超时/识别置信度） | 该张标记“未知牌”，发 `EVT_CARD_VALUE` + 标志 | 记录异常，整局结束后向小程序报告 |
 | 串口掉线 | 子板/底板双方 | 本地超时处理 | 底板暂停发牌流程，等待链路恢复 |

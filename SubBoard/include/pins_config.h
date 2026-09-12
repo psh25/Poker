@@ -15,9 +15,9 @@
 #define PIN_MOTOR_AIN2       47  // TB6612 AIN2
 #define PIN_MOTOR_STBY       45  // TB6612 STBY（高=使能）
 
-// ---- 光敏传感器 ----
-#define PIN_PHOTO            3   // TODO: 光敏 GPIO 中断（检测牌通过）；测试台未接光敏（定时出牌模式）
-//   ⚠️ 量产子板接光敏时按实际原理图改到独立引脚，勿与电机 STBY 共用。
+// ---- 光电门（原来的光敏传感器）----
+// 电平：有牌 = 低电平(GND)，无牌 = 高。主循环轮询 + 去抖（不用中断），见 hardware.cpp
+#define PIN_PHOTO            3
 
 // ---- 摄像头 / 视觉模组（接口待定：SPI / I2C / UART）----
 #define PIN_CAM_TX           10  // 子板 → 摄像头 TX
@@ -27,9 +27,10 @@
 //    否则会把原生 USB 口拉坏。代码里改成"只在真正要截图时才配置成输出"，
 //    平时保持 USB 态；截图期间原生 USB 日志不可用，请从 CH340 口看日志。
 //    PCB 已固定该引脚，暂不改动；若以后要换脚需同步改原理图。
-#define PIN_CAM_TRIG         20  // 摄像头截图触发（拉高一个脉冲）
+#define PIN_CAM_TRIG         20  // 摄像头截图触发（**拉低一个脉冲**，OpenMV P6 下降沿触发）
 
 // ---- 与底板通信：2 线 UART ----
-// 测试台接线（test1 rig ↔ 底板）：子板 RX=41 ← 底板 TX=42；子板 TX=42 → 底板 RX=41
-#define PIN_UART_POS         38     // RX(连底板TX)
-#define PIN_UART_NEG         39     // TX(连底板RX)
+// 接线（POS 连 POS、NEG 连 NEG + 共地）：
+//   底板 POS=IO15(TX) → 子板 POS=IO38(RX)；子板 NEG=IO39(TX) → 底板 NEG=IO12(RX)
+#define PIN_UART_POS         38     // RX（连底板 POS/TX）
+#define PIN_UART_NEG         39     // TX（连底板 NEG/RX）

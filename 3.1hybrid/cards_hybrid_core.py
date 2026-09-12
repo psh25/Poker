@@ -163,13 +163,14 @@ def validate_config(settings=None):
             raise ValueError("max_candidates must be positive")
 
 
-def start_camera(calibrate=False):
+def start_camera(calibrate=False, enable_leds=True):
     """Shared persisted exposure/gain/WB. Recognition never auto-calibrates."""
     import csi
     from machine import LED
     leds = [LED("LED_RED"), LED("LED_GREEN"), LED("LED_BLUE")]
-    for led in leds:
-        led.on()
+    if enable_leds:
+        for led in leds:
+            led.on()
     path = C.CAMERA_CONFIG_PATH
     if not calibrate and not exists(path):
         raise ValueError("No camera.json: calibrate with capture_cards_fast.py first")

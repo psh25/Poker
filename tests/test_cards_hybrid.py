@@ -112,6 +112,13 @@ def test_standalone_trigger_takes_exactly_one_snapshot(monkeypatch):
             self.snapshots += 1
             return object()
 
+    class Led:
+        def on(self):
+            pass
+
+        def off(self):
+            pass
+
     monkeypatch.setattr(
         standalone.V, "process_pass",
         lambda frame, bank, records, angles, settings, budget=None: {
@@ -119,6 +126,97 @@ def test_standalone_trigger_takes_exactly_one_snapshot(monkeypatch):
             "pass_ms": 1, "diagnostics": {}})
     camera = Camera()
     result, unused_capture_ms = standalone.recognize_once(
-        camera, {}, time.ticks_ms())
+        camera, {}, time.ticks_ms(), [Led(), Led(), Led()])
     assert result["label"] == "club_10"
     assert camera.snapshots == 1
+
+
+def test_standalone_uart_parser_accepts_fragmented_calibrate():
+    install_host_api()
+    import main_standalone as standalone
+    importlib.reload(standalone)
+
+    class UART:
+        def __init__(self, data):
+            self.data = data
+
+        def any(self):
+            return len(self.data)
+
+        def read(self, count):
+            result, self.data = self.data[:count], self.data[count:]
+            return result
+
+    state = {"buffer": bytearray(), "overflow": False}
+    assert standalone.read_uart_lines(UART(b"CALIB"), state) == []
+    assert standalone.read_uart_lines(UART(b"RATE\r\n"), state) == ["CALIBRATE"]
+
+
+def test_standalone_calibration_locks_saves_and_turns_leds_off(monkeypatch):
+    install_host_api()
+    import main_standalone as standalone
+    importlib.reload(standalone)
+
+    class Led:
+        def __init__(self):
+            self.value = 0
+
+        def on(self):
+            self.value = 1
+
+        def off(self):
+            self.value = 0
+
+    class Camera:
+        def __init__(self):
+            self.exposure = 10000
+            self.gain = 4.0
+            self.rgb = (1.0, 2.0, 3.0)
+            self.snapshots = []
+            self.locked = []
+
+        def exposure_us(self):
+            return self.exposure
+
+        def gain_db(self):
+            return self.gain
+
+        def rgb_gain_db(self):
+            return self.rgb
+
+        def auto_exposure(self, enabled, exposure_us=-1):
+            if not enabled:
+                self.exposure = exposure_us
+                self.locked.append("exposure")
+
+        def auto_gain(self, enabled, gain_db=None):
+            if not enabled:
+                self.gain = gain_db
+                self.locked.append("gain")
+
+        def auto_whitebal(self, enabled, rgb_gain_db=None):
+            if not enabled:
+                self.rgb = rgb_gain_db
+                self.locked.append("whitebal")
+
+        def snapshot(self, time):
+            self.snapshots.append(time)
+            if len(self.snapshots) == 1:
+                self.exposure = 12000
+                self.gain = 6.0
+                self.rgb = (4.0, 5.0, 6.0)
+
+    saved = []
+    monkeypatch.setattr(standalone, "save_camera_config",
+                        lambda settings: saved.append(dict(settings)))
+    cam = Camera()
+    leds = [Led(), Led(), Led()]
+    current = {}
+    settings = standalone.calibrate_camera(cam, current, leds)
+    assert settings["exposure_us"] == 12000
+    assert saved and saved[0]["gain_db"] == 6.0
+    assert current == settings
+    assert cam.snapshots == [standalone.C.CAMERA_SETTLE_MS,
+                             standalone.C.CAMERA_APPLY_SETTLE_MS]
+    assert cam.locked[-3:] == ["exposure", "gain", "whitebal"]
+    assert all(led.value == 0 for led in leds)

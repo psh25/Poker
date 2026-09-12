@@ -25,7 +25,8 @@ V = None  # Set by main() after the OpenMV host shim has been installed.
 
 def install_host_api():
     sys.modules["image"] = types.SimpleNamespace(Image=HostImage, GRAYSCALE=0, AREA=0)
-    sys.modules["machine"] = types.SimpleNamespace(Pin=object, UART=object)
+    sys.modules["machine"] = types.SimpleNamespace(Pin=object, UART=object,
+                                                    LED=object)
     time.ticks_ms = lambda: int(time.monotonic() * 1000)
     time.ticks_diff = lambda a, b: a - b
     time.sleep_ms = lambda ms: time.sleep(ms / 1000)

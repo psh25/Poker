@@ -5,8 +5,12 @@
 
 /**
  * 子板裸机状态机（docs/subboard_architecture.md 第三章）
- * 定时出牌（USE_PHOTO_SENSOR=0）：IDLE → MOTOR_ON → BRAKE → REVERSE → PAUSE → SEND_BACK → (自动下一张|IDLE)
- * 光敏出牌（USE_PHOTO_SENSOR=1）：IDLE → MOTOR_ON → WAIT_CARD → CAM_CAPTURE → SEND_BACK → IDLE
+ * 定时出牌（USE_PHOTO_SENSOR=0）：IDLE → MOTOR_ON → BRAKE → REVERSE → PAUSE → SEND_BACK
+ * 光电门出牌（USE_PHOTO_SENSOR=1）：
+ *   IDLE → MOTOR_ON → WAIT_CARD（等有牌）→ WAIT_GONE（等无牌，确认牌完整通过）
+ *        → BRAKE → REVERSE → PAUSE → SEND_BACK
+ *   卡牌保护：WAIT_* → RETRACT（反转撤回）→ RETRACT_WAIT（等门清空）
+ *            → 恢复成功则重试这一张；撤回失败/重试超限则 ERROR（等底板复位）
  * 任意阶段异常 → ERROR（立即上报，等待底板 CMD_RESET / CMD_STOP 恢复）
  */
 
@@ -16,8 +20,11 @@ typedef enum {
     SUB_STATE_BRAKE,            // 正转→反转之间的短刹车（防换向电流冲击）
     SUB_STATE_REVERSE,          // 出牌后反转回退（摄像头拍牌底）
     SUB_STATE_PAUSE,            // 定时模式：每张牌之间的停顿
-    SUB_STATE_WAIT_CARD,
-    SUB_STATE_CAM_CAPTURE,
+    SUB_STATE_WAIT_CARD,        // 光电门模式：等“有牌”
+    SUB_STATE_WAIT_GONE,        // 光电门模式：等“无牌”并确认牌完整通过
+    SUB_STATE_RETRACT,          // 卡牌：反转撤回
+    SUB_STATE_RETRACT_WAIT,     // 撤回后等门恢复“无牌”
+    SUB_STATE_CAM_CAPTURE,      // 保留（摄像头现由底板 CMD_CAM_CAPTURE 驱动，此状态暂不用）
     SUB_STATE_SEND_BACK,
     SUB_STATE_ERROR
 } sub_state_t;

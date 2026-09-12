@@ -16,9 +16,22 @@
 #define MOTOR_REV_DUTY 160 // 反转 PWM 占空比（约 63%）
 
 // 出牌触发方式：
-//   0 = 定时出牌（无光敏时调试用，推荐）：正转 MOTOR_FWD_MS → 刹车 MOTOR_BRAKE_MS → 反转 MOTOR_REV_MS → 停顿 → 回传完成
-//   1 = 光敏触发（量产）：启动电机后等光敏检测到牌通过（PHOTO_TIMEOUT_MS 超时 = 卡牌）
-#define USE_PHOTO_SENSOR 0
+//   0 = 定时出牌（没有光电门时的调试路径）：正转 MOTOR_FWD_MS → 刹车 → 反转 → 停顿
+//   1 = 光电门（生产路径）：正转 → 等“有牌” → 等“无牌”确认牌完整通过 → 刹车/反转/停顿
+#define USE_PHOTO_SENSOR 1
+
+// ===== 光电门（原来的光敏传感器）=====
+// 电平：**有牌 = GND(低电平)**，无牌 = 高电平。
+// 一张牌的正常过程是 无牌 → 有牌 → 无牌；若下一张牌微微露头又缩回，中间会夹一小段
+// “无牌”，所以：① 电平先做去抖；② “牌已离开”还要再确认 PHOTO_GONE_MS 才算数；
+// ③ “有牌”持续太久（PHOTO_JAM_MS）= 牌卡在出牌口。
+#define PHOTO_DEBOUNCE_MS    20    // 电平去抖：连续稳定多久才认可该电平
+#define PHOTO_GONE_MS        60    // “牌已完全离开”确认时间（防下一张牌微露头）
+#define PHOTO_TIMEOUT_MS     1500  // 正转后这么久还没看到“有牌” → 没出牌/卡在里面
+#define PHOTO_JAM_MS         1500  // “有牌”持续超过这么久 → 牌卡在出牌口
+#define PHOTO_RETRACT_MS     800   // 判卡后反转撤回的时长
+#define PHOTO_CLEAR_MS       500   // 撤回后等“门恢复无牌”的时间
+#define PHOTO_JAM_RETRY_MAX  1     // 撤回成功后最多自动重试几次（超出则报错等重启）
 
 // ===== 自动连续发牌（调试用：不需要底板，自己一张接一张发）=====
 // AUTO_DEAL_ENABLE = 1：上电延时 AUTO_DEAL_START_DELAY_MS 后自动开始连续发牌
@@ -32,16 +45,14 @@
 
 // ===== 时序 / 超时（ms，与底板协议一致）=====
 #define MOTOR_STARTUP_MS 50    // 电机启动完成判定（光敏模式用）
-#define PHOTO_TIMEOUT_MS 500   // 光敏超时：发牌电机启动后未检测到牌 → 卡牌/漏发
 #define CAMERA_TIMEOUT_MS 2000 // 摄像头识别超时 → 按未知牌处理
-#define CAM_TRIG_PULSE_MS 200   // PIN_CAM_TRIG 截图触发脉冲宽度（ms，高电平有效）
+#define CAM_TRIG_PULSE_MS 200   // PIN_CAM_TRIG 触发脉冲宽度（ms，**低电平有效**；OpenMV 要求 ≥5ms）
 
-// ===== 摄像头回传（截图结果由摄像头主动发回，子板只接收解析）=====
+// ===== 摄像头回传（OpenMV 主动发回 ASCII 文本行，子板只接收解析）=====
 // 硬件：摄像头 TX → 子板 PIN_CAM_RX；子板 PIN_CAM_TX 备用（不主动下发）
-#define CAM_UART_BAUD 115200        // 待摄像头模组手册确认
-#define CAM_RX_RING_SIZE 128        // 接收环形缓冲（中断写入，主循环解析）
-#define CAM_RESULT_TIMEOUT_MS 2000  // 触发截图后等待回传的最长时间（超时→按未知牌处理）
-// 1 = 超时未收到回传时，仍发一帧空 EVT_CARD_VALUE（保留“发空牌”调试功能）
+#define CAM_UART_BAUD 115200        // 与 OpenMV UART3 一致（115200 8N1）
+#define CAM_RESULT_TIMEOUT_MS 1200  // 触发后等待 "RESULT:..." 的最长时间（OpenMV 文档建议 1.2s）
+// 1 = 超时未收到结果时，按“未知牌 + 超时来源”上报（保留调试路径，整局能跑完）
 // 0 = 超时直接上报 EVT_ERROR_CAM_FAIL
 #define CAM_EMPTY_ON_TIMEOUT 1
 

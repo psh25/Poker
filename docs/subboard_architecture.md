@@ -14,6 +14,8 @@ v1.4（2026-09-10）修订：新增 `CMD_CAM_CAPTURE` 截图触发命令；子�
 
 v1.5（2026-09-10）修订：子板**不主动取图**，改为接收摄像头回传：`Serial2`（PIN_CAM_RX）中断 → 环形缓冲 → 主循环解析 → 发 `EVT_CARD_VALUE`；超时未回传按 `CAM_EMPTY_ON_TIMEOUT` 发空牌（保留调试路径）。新增 `EVT_STATUS` 心跳应答（`CMD_STATUS_QUERY` 的响应）。
 
+v1.6（2026-09-12）修订：摄像头改为 OpenMV 原生 ASCII 文本行（`RESULT:spade_A` 等），子板按行解析并翻译成牌面编码，摄像头代码不用改；触发极性改为**下降沿**（空闲高、拉低 ≥5ms）。光电门（原光敏）改为**轮询 + 去抖**：等“有牌”→ 等“无牌”确认牌完整通过；新增卡牌保护 `RETRACT`/`RETRACT_WAIT`（反转撤回，恢复则自动重试，失败则报 `EVT_ERROR_CARD_JAM` 等复位）。
+
 ## 一、职责定位
 
 子板是**“带反馈的执行器”**，不是决策者：
@@ -59,7 +61,10 @@ v1.5（2026-09-10）修订：子板**不主动取图**，改为接收摄像头�
 | IDLE | 空闲，等待底板命令 | 解析串口命令、查询状态、自检 |
 | MOTOR_ON | 发牌电机启动中 | 启动电机，启动 500ms 超时计时 |
 | BRAKE | 正转→反转过渡 | 短刹车 `MOTOR_BRAKE_MS`（AIN1=AIN2=高，PWM=0；定时模式） |
-| WAIT_CARD | 等待光敏检测到牌 | 等待光敏中断标志；超时进入 ERROR |
+| WAIT_CARD | 光电门模式：等“有牌” | 轮询去抖后的电平；`PHOTO_TIMEOUT_MS` 仍未见牌 → 判卡 |
+| WAIT_GONE | 光电门模式：等“无牌”确认牌通过 | “无牌”稳定 `PHOTO_GONE_MS` → 上报 `EVT_CARD_OUT`；“有牌”持续 `PHOTO_JAM_MS` → 判卡 |
+| RETRACT | 卡牌：反转撤回 | 反转 `PHOTO_RETRACT_MS` 把牌退回 |
+| RETRACT_WAIT | 撤回后等门清空 | 门恢复“无牌” → 自动重试这一张；`PHOTO_CLEAR_MS` 内仍“有牌” → ERROR |
 | CAM_CAPTURE | 摄像头拍照 + 识别 | 触发拍照、读取图像、识别牌面（含 2s 超时） |
 | SEND_BACK | 打包回传底板 | 组装事件帧发送，完成后回到 IDLE |
 | ERROR | 物理层异常 | 立即上报错误事件，停止电机，等待底板指令（重试/复位） |
@@ -71,8 +76,13 @@ stateDiagram-v2
     [*] --> IDLE : 上电自检完成
     IDLE --> MOTOR_ON : 收到 CMD_DEAL_START
     MOTOR_ON --> WAIT_CARD : 电机启动完成
-    WAIT_CARD --> CAM_CAPTURE : 光敏中断触发
-    WAIT_CARD --> ERROR : 500ms 超时（卡牌/漏发）
+    WAIT_CARD --> WAIT_GONE : 检测到“有牌”
+    WAIT_CARD --> RETRACT : PHOTO_TIMEOUT_MS 未见牌（漏发/卡在里面）
+    WAIT_GONE --> BRAKE : “无牌”稳定 PHOTO_GONE_MS（牌完整通过）
+    WAIT_GONE --> RETRACT : “有牌”持续 PHOTO_JAM_MS（卡在出牌口）
+    RETRACT --> RETRACT_WAIT : 反转撤回结束
+    RETRACT_WAIT --> MOTOR_ON : 门已清空 → 自动重试这一张
+    RETRACT_WAIT --> ERROR : 门仍被占（撤回失败）
     CAM_CAPTURE --> SEND_BACK : 识别完成（成功或标记未知牌）
     SEND_BACK --> IDLE : EVT_DEAL_DONE 发送完成
     IDLE --> ERROR : 自检失败（上电或底板触发）
@@ -87,14 +97,19 @@ stateDiagram-v2
 
 | 转移 | 触发条件 | 动作 |
 |------|----------|------|
-| IDLE → MOTOR_ON | 收到 `CMD_DEAL_START` | 启动发牌电机；启动 500ms 超时定时器 |
-| MOTOR_ON → WAIT_CARD | 电机启动完成 | 等待光敏触发 |
+| IDLE → MOTOR_ON | 收到 `CMD_DEAL_START` | 启动发牌电机正转 |
+| MOTOR_ON → WAIT_CARD | 光电门模式，电机启动 `MOTOR_STARTUP_MS` 后 | 等待“有牌” |
 | MOTOR_ON → BRAKE | 定时模式正转结束 | 上报 `EVT_CARD_OUT`；短刹车 `MOTOR_BRAKE_MS` |
 | BRAKE → REVERSE | 刹车结束且 `MOTOR_REV_MS>0` | 启动反转回退 |
 | BRAKE → PAUSE | 刹车结束且 `MOTOR_REV_MS=0` | 停止电机，进入停顿 |
-| WAIT_CARD → CAM_CAPTURE | 光敏中断标志置位 | 停止电机；触发摄像头拍照 |
-| WAIT_CARD → ERROR | 500ms 未检测到牌 | 停止电机；上报 `EVT_ERROR_CARD_JAM` |
-| CAM_CAPTURE → SEND_BACK | 识别完成 | 组装 `EVT_CARD_VALUE`（含未知牌标志） |
+| WAIT_CARD → WAIT_GONE | 去抖后检测到“有牌” | 继续等牌离开 |
+| WAIT_CARD → RETRACT | `PHOTO_TIMEOUT_MS` 内一直“无牌” | 判为漏发/卡住 → 反转撤回 |
+| WAIT_GONE → BRAKE | “无牌”稳定 `PHOTO_GONE_MS` | 牌完整通过：停电机、上报 `EVT_CARD_OUT`、短刹车 |
+| WAIT_GONE → RETRACT | “有牌”持续 `PHOTO_JAM_MS` | 判为卡在出牌口 → 反转撤回 |
+| RETRACT → RETRACT_WAIT | 反转 `PHOTO_RETRACT_MS` 结束 | 停电机，等门恢复“无牌” |
+| RETRACT_WAIT → MOTOR_ON | 门恢复“无牌”且在重试次数内 | 自动重试这一张（≤ `PHOTO_JAM_RETRY_MAX`） |
+| RETRACT_WAIT → ERROR | `PHOTO_CLEAR_MS` 内仍“有牌”，或重试超限 | 停止电机；上报 `EVT_ERROR_CARD_JAM` |
+| CAM_CAPTURE → SEND_BACK | 识别完成（该状态当前不由状态机进入） | 组装 `EVT_CARD_VALUE`（含未知牌标志） |
 | SEND_BACK → IDLE | 事件帧发送完成 | 清空单卡缓冲，回到待命 |
 | ERROR → IDLE | 收到底板复位/重试指令 | 复位状态机，重新待命 |
 
@@ -103,10 +118,10 @@ stateDiagram-v2
 | 中断/定时器 | 用途 | 说明 |
 |-------------|------|------|
 | 串口 RX 中断 | 接收底板命令 | 中断内只写入环形缓冲区，主循环解析，避免丢帧 |
-| 光敏 GPIO 中断 | 检测牌通过 | 置位标志 + 记录计数；配合消抖/多次采样防电机干扰误触发 |
-| 软件超时定时器 | 光敏 500ms 超时 | 用于卡牌/漏发检测 |
+| 光电门轮询（不用中断） | 检测牌是否在出牌口 | 主循环 `sub_photo_update()` 采样 + `PHOTO_DEBOUNCE_MS` 去抖；有牌=低电平 |
+| 软件超时定时器 | 等牌 / 卡牌 / 撤回超时 | `PHOTO_TIMEOUT_MS`（未见牌）、`PHOTO_JAM_MS`（卡在门口）、`PHOTO_CLEAR_MS`（撤回后未清空） |
 | 串口 TX | 事件上报 | 逐张实时上报，不缓存整副牌 |
-| 摄像头 TRIG 输出 | 截图触发 | 收到 `CMD_CAM_CAPTURE` 后拉高 `PIN_CAM_TRIG` 一个 `CAM_TRIG_PULSE_MS` 脉冲 |
+| 摄像头 TRIG 输出 | 截图触发 | 收到 `CMD_CAM_CAPTURE` 后把 `PIN_CAM_TRIG` **拉低** `CAM_TRIG_PULSE_MS`（OpenMV P6 下降沿触发），再恢复高 |
 | 电流检测（如有） | 发牌电机堵转 | 模拟输入或驱动芯片报警脚，异常立即上报 |
 
 > 设计原则：中断函数内**不做耗时操作**（不识别图像、不解析协议），只置标志位/写缓冲；全部业务在 `loop()` 状态机中处理。

@@ -22,6 +22,45 @@
 #define PROTO_TAIL        0xAA
 #define PROTO_MAX_DATA    32
 
+// ================= 牌面编码（EVT_CARD_VALUE 用）=================
+// data[0] = card（1 字节，0~55，共 56 类：54 张牌 + 背面 + 未知）
+// data[1] = src （可选，来源/状态；len=1 时按 CARD_SRC_CAMERA 处理）
+//
+// 花色顺序：黑桃 红桃 梅花 方块；code = 花色*13 + 点数
+//   code 0~12   = 黑桃 A,2,3,4,5,6,7,8,9,10,J,Q,K
+//   code 13~25  = 红桃 …   26~38 = 梅花 …   39~51 = 方块 …
+#define CARD_SUIT_SPADE    0   // 黑桃
+#define CARD_SUIT_HEART    1   // 红桃
+#define CARD_SUIT_CLUB     2   // 梅花
+#define CARD_SUIT_DIAMOND  3   // 方块
+
+#define CARD_RANK_A        0
+#define CARD_RANK_2        1
+#define CARD_RANK_3        2
+#define CARD_RANK_4        3
+#define CARD_RANK_5        4
+#define CARD_RANK_6        5
+#define CARD_RANK_7        6
+#define CARD_RANK_8        7
+#define CARD_RANK_9        8
+#define CARD_RANK_10       9
+#define CARD_RANK_J        10
+#define CARD_RANK_Q        11
+#define CARD_RANK_K        12
+
+#define CARD_CODE(suit, rank) ((uint8_t)((uint8_t)(suit) * 13u + (uint8_t)(rank)))
+
+#define CARD_JOKER_SMALL   52  // 小王
+#define CARD_JOKER_BIG     53  // 大王
+#define CARD_BACK          54  // 背面（识别到牌背）
+#define CARD_UNKNOWN       55  // 未知（没认出来 / 兜底）
+
+// 来源 / 状态
+#define CARD_SRC_CAMERA    0   // 摄像头正常识别
+#define CARD_SRC_TIMEOUT   1   // 识别超时（未收到回传，按未知兜底）
+#define CARD_SRC_LOWCONF   2   // 低置信度（按未知处理）
+#define CARD_SRC_DEBUG     3   // 调试 / 模拟
+
 // 底板 → 子板：命令（0x01~0x0F）
 typedef enum {
     CMD_DEAL_START   = 0x01,  // 发一张牌

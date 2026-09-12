@@ -15,8 +15,11 @@ void sub_self_test(void);          // 上电自检 → 上报 EVT_READY
 void sub_uart_rx_isr(void);
 bool sub_uart_read_byte(uint8_t *b);
 
-// 光敏：中断置标志，主循环用 sub_photo_take 读取并清除
-bool sub_photo_take(void);
+// ---- 光电门（原来的光敏传感器）：有牌 = 低电平(GND)，无牌 = 高 ----
+void sub_photo_init(void);            // 配置引脚（上电调用一次）
+void sub_photo_update(void);          // 主循环周期调用：采样 + 去抖
+bool sub_photo_present(void);         // 去抖后：true = 当前有牌
+uint32_t sub_photo_stable_ms(void);   // 当前（去抖后）电平已稳定保持多久（ms）
 
 // ---- 摄像头：截图触发 + 回传接收（不回传 = 模组未就绪时的调试路径）----
 // 回传帧格式（占位：模组确定后按手册修改）见 hardware.cpp 顶部注释。

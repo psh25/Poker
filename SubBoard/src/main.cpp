@@ -143,7 +143,8 @@ void setup() {
     dbg_println("[WARN] AUTO_DEAL_ENABLE=0 -> 自动发牌未启动！想让它自己发牌请改成 1");
 #endif
 #if USE_PHOTO_SENSOR
-    dbg_println("[WARN] USE_PHOTO_SENSOR=1 -> 在等光敏触发；没接光敏会 500ms 超时报卡牌停止");
+    dbg_println("[WARN] USE_PHOTO_SENSOR=1 -> 光电门模式：没接光电门会等 1.5s 判卡、"
+                "反转撤回后重试，仍失败则报 EVT_ERROR_CARD_JAM 停机");
 #endif
 
     dbg_println("[SUB] boot ok, waiting for commands");
@@ -161,6 +162,7 @@ void loop() {
         proto_rx_byte(b);
     }
     sub_camera_service();   // 摄像头回传解析：触发脉冲收尾 / 结果上报
+    sub_photo_update();     // 光电门采样 + 去抖（有牌=低电平 / 无牌=高）
 
     // 2) 调试：USB CDC + CH340 双路读入命令行（模拟底板发来）
     while (Serial.available() > 0)  cli_feed_byte((char)Serial.read());

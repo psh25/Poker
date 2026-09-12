@@ -52,8 +52,13 @@ static const int16_t kDeckAngles[DECK_COUNT] = { 0, 45, 90, 135, 180, 225, 270, 
 // ================= 时序 / 超时（ms）=================
 #define ENCODER_DEBOUNCE_MS    5     // 编码器消抖（架构 v2 异常处理 8.1）
 #define ENCODER_LONG_PRESS_MS  2000  // 长按判定（GAME_ACTIVE：确认结束并回 IDLE）
-#define PHOTO_TIMEOUT_MS       500   // 光敏超时（与子板协议一致）
-#define CAMERA_TIMEOUT_MS      1000  // 【临时测试】牌面识别等待 0.5s，超时 1s；恢复 5s 识别时改回 6000
+// 等待子板 EVT_CARD_OUT 的超时。子板光电门模式下一次卡牌恢复最多约 4s
+// （等牌 1.5s + 反转撤回 0.8s + 等门清空 0.5s + 重试）；真正的“卡牌”由子板主动
+// 上报 EVT_ERROR_CARD_JAM，不靠超时判断，所以这里放宽即可。
+#define PHOTO_TIMEOUT_MS       5000
+// 等待子板 EVT_CARD_VALUE 的超时。必须大于子板的 CAM_RESULT_TIMEOUT_MS(1200ms)，
+// 否则子板还没兜底上报，底板就先超时了（OpenMV 识别约 0.3~0.5s）
+#define CAMERA_TIMEOUT_MS      2000
 #define SUB_RESP_TIMEOUT_MS    1000  // 等待子板响应超时
 #define MONITOR_PERIOD_MS      500   // 系统监控巡检周期
 #define COMM_HEARTBEAT_MS      1000  // 子板心跳查询间隔

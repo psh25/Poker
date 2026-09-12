@@ -8,6 +8,7 @@ The 900 ms deadline is cooperative: an individual native call cannot be
 interrupted. Measure TIME_MS on the actual H7 Plus before acceptance.
 """
 import gc
+import os
 import time
 from machine import Pin
 import cards_fast_config as C
@@ -17,10 +18,10 @@ import cards_hybrid_core as V
 # Wider than capture ROIs so the complete symbols remain visible throughout
 # the measured mechanical displacement range.
 RECOGNITION_ROIS = {
-    "rank": (105, 25, 100, 155),
-    "suit": (105, 130, 100, 110),
-    "joker": (110, 25, 80, 150),
-    "back": (170, 120, 40, 40),
+    "rank": (120, 25, 100, 155),
+    "suit": (120, 130, 100, 110),
+    "joker": (120, 25, 80, 150),
+    "back": (185, 120, 40, 40),
 }
 
 COARSE_ANGLES = (0,)
@@ -71,6 +72,15 @@ RETRY_SETTLE_MS = 20
 DISCARD_AFTER_TRIGGER = 1
 PRINT_TIMING = True
 DEBUG_DRAW_TRIGGER_FRAME = True  # Draw only after USB result/timing completes.
+
+# Optional ground-truth sample collection. The exact frame used for recognition
+# is saved before any IDE rectangles are drawn. Prefer SD for bulk BMP storage.
+SAVE_TEST_SAMPLES = False
+SAMPLE_USE_SD_CARD = True
+SAMPLE_SESSION = "light01"
+SAMPLE_LABEL = "10_club"  # e.g. 10_club, spade, joker_red, back
+SAMPLE_POSITION = "center"  # center, left, right, up, down, angle_left...
+SAMPLE_MIN_FREE_BYTES = 2 * 1024 * 1024
 DEBUG_ROI_COLORS = {
     "rank": (255, 0, 0),
     "suit": (0, 0, 255),
@@ -174,6 +184,109 @@ def print_result(result):
         print("INFO:" + info)
 
 
+def _safe_sample_token(value):
+    """Keep user-edited labels safe for FAT paths and CSV filenames."""
+    out = ""
+    for char in str(value):
+        if (("a" <= char <= "z") or ("A" <= char <= "Z")
+                or ("0" <= char <= "9") or char in ("_", "-")):
+            out += char
+        else:
+            out += "_"
+    return out or "unknown"
+
+
+def _free_bytes(path):
+    values = os.statvfs(path)
+    block_size = values[1] if values[1] else values[0]
+    return int(block_size) * int(values[3])
+
+
+def prepare_sample_storage():
+    if not SAVE_TEST_SAMPLES:
+        return None
+    if SAMPLE_USE_SD_CARD:
+        volume = "/sdcard"
+        if not V.exists(volume):
+            raise OSError("Sample mode needs an SD card mounted at /sdcard")
+    else:
+        volume = C.ROOT
+    base = volume + "/card_samples"
+    V.mkdir(base)
+    directory = base + "/" + _safe_sample_token(SAMPLE_SESSION)
+    V.mkdir(directory)
+    if _free_bytes(volume) < SAMPLE_MIN_FREE_BYTES:
+        raise OSError("Insufficient sample storage")
+
+    next_index = 1
+    for name in os.listdir(directory):
+        if len(name) < 5 or name[4] != "_":
+            continue
+        try:
+            index = int(name[:4])
+            if index >= next_index:
+                next_index = index + 1
+        except ValueError:
+            pass
+
+    csv_path = directory + "/samples.csv"
+    if not V.exists(csv_path):
+        with open(csv_path, "w") as stream:
+            stream.write(
+                "index,filename,ground_truth,position,result,reason,info,"
+                "time_ms,exposure_us,gain_db,rgb_gain_db,calibration_id,"
+                "rank_box,suit_box,joker_box,back_box\n")
+        os.sync()
+    print("SAMPLE_READY:%s label=%s position=%s" % (
+        directory, SAMPLE_LABEL, SAMPLE_POSITION))
+    return {"directory": directory, "csv": csv_path,
+            "volume": volume, "next": next_index}
+
+
+def _csv_cell(value):
+    text = str(value).replace("\r", " ").replace("\n", " ")
+    return '"' + text.replace('"', '""') + '"'
+
+
+def _result_box(result, group):
+    return result.get("groups", {}).get(group, {}).get("box", "")
+
+
+def save_test_sample(frame, result, profile, camera, sample_state):
+    """Save one raw trigger frame plus compact, corresponding metadata."""
+    if sample_state is None or frame is None:
+        return
+    if _free_bytes(sample_state["volume"]) < SAMPLE_MIN_FREE_BYTES:
+        raise OSError("Sample storage is nearly full")
+
+    index = sample_state["next"]
+    sample_state["next"] = index + 1
+    truth = _safe_sample_token(SAMPLE_LABEL)
+    position = _safe_sample_token(SAMPLE_POSITION)
+    name = "%04d_%s_%s.bmp" % (index, truth, position)
+    image_path = sample_state["directory"] + "/" + name
+    save_start = time.ticks_ms()
+
+    # Recognition only reads/copies from frame. Saving here therefore records
+    # the exact unannotated pixels used by the just-completed decision.
+    frame.save(image_path)
+    label = result.get("label", "UNKNOWN")
+    reason = (unknown_detail(result) if label == "UNKNOWN"
+              else result.get("reason", "OK"))
+    values = (
+        index, name, SAMPLE_LABEL, SAMPLE_POSITION, label, reason,
+        result_info(result), profile.get("total_ms", -1),
+        camera.get("exposure_us", ""), camera.get("gain_db", ""),
+        camera.get("rgb_gain_db", ""), camera.get("calibration_id", ""),
+        _result_box(result, "rank"), _result_box(result, "suit"),
+        _result_box(result, "joker"), _result_box(result, "back"))
+    with open(sample_state["csv"], "a") as stream:
+        stream.write(",".join(_csv_cell(value) for value in values) + "\n")
+    os.sync()
+    print("SAMPLE:%s SAVE_MS:%d" % (
+        name, time.ticks_diff(time.ticks_ms(), save_start)))
+
+
 def draw_trigger_debug(frame, result, sequence, profile):
     """Draw geometry only; all text diagnostics are printed through USB."""
     if not DEBUG_DRAW_TRIGGER_FRAME or frame is None:
@@ -267,6 +380,7 @@ def recognize_trigger(cam, bank, trigger_ms):
 def main():
     V.validate_config(RECOGNITION_VISION)
     V.ensure_storage()
+    sample_state = prepare_sample_storage()
     cam, camera, leds = V.start_camera(False)
     bank = V.load_bank(STRICT_TEMPLATE_COVERAGE, MAX_TEMPLATES_PER_LABEL)
     pin = Pin(C.TRIGGER_PIN, Pin.IN, Pin.PULL_UP)
@@ -313,6 +427,11 @@ def main():
                 profile["over_budget"] = profile["total_ms"] > RESULT_BUDGET_MS
                 if PRINT_TIMING:
                     print("TIME_MS:%d" % profile["total_ms"])
+                try:
+                    save_test_sample(debug_frame, result, profile,
+                                     camera, sample_state)
+                except Exception as error:
+                    print("SAMPLE_ERROR:" + repr(error))
                 draw_trigger_debug(debug_frame, result, sequence, profile)
                 gc.collect()  # Idle cleanup before re-arming; not per template.
             state[0] = 0

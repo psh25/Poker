@@ -2,6 +2,7 @@
 import copy
 import importlib
 import sys
+import time
 
 import cv2
 import numpy as np
@@ -96,3 +97,28 @@ def test_plausible_face_suppresses_single_template_back(monkeypatch):
     info = Recognize.result_info(result)
     assert "R:K,0.940,0.140,1" in info
     assert "S:heart,0.910,0.010,0" in info
+
+
+def test_standalone_trigger_takes_exactly_one_snapshot(monkeypatch):
+    install_host_api()
+    import main_standalone as standalone
+    importlib.reload(standalone)
+
+    class Camera:
+        def __init__(self):
+            self.snapshots = 0
+
+        def snapshot(self):
+            self.snapshots += 1
+            return object()
+
+    monkeypatch.setattr(
+        standalone.V, "process_pass",
+        lambda frame, bank, records, angles, settings, budget=None: {
+            "label": "club_10", "reason": "OK", "groups": {},
+            "pass_ms": 1, "diagnostics": {}})
+    camera = Camera()
+    result, unused_capture_ms = standalone.recognize_once(
+        camera, {}, time.ticks_ms())
+    assert result["label"] == "club_10"
+    assert camera.snapshots == 1

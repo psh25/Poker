@@ -77,7 +77,10 @@ DealerMachine/
 | `include/deal_config.h` / `src/deal_config.cpp` | 牌局参数预置表 + 自定义参数 → 发牌计划 |
 | `include/deal_selection.h` / `src/deal_selection.cpp` | 发牌选择状态（方案 / 是否确认 / 顺序或随机），带互斥量快照 |
 | `include/itc.h` / `src/itc.cpp` | 队列、信号量、互斥量、事件组创建 |
-| `src/tasks.cpp` | 7 个任务骨架 |
+| `src/tasks.cpp` | 任务创建 + 子板通信 / 编码器 / 屏幕显示 / 系统监控 四个任务 |
+| `src/tasks_deal.cpp` / `include/tasks_deal.h` | 发牌控制任务：执行发牌计划、错误处理、状态快照 `deal_get_status()` |
+| `src/host_actions.cpp` / `include/host_actions.h` | 主机命令动作（BLE / CLI 共用）+ 蓝牙接收任务 |
+| `src/cli.cpp` / `include/cli.h` | 调试串口命令行（`cli_poll()` 由子板通信任务周期调用） |
 | `src/display.cpp` / `include/display.h` | 屏幕显示（只按显示命令绘制：IDLE 屏、发牌进度、错误、GAME_ACTIVE） |
 | `src/state_machine.cpp` | 状态机与转移逻辑 |
 | `src/protocol.cpp` | 子板 UART 协议（帧解析/发送/事件分发） |

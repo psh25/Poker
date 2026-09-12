@@ -49,6 +49,17 @@ v3.1（2026-09-12）修订（结构整理）：
 ② 清理死代码：未使用的 `deal_wait_evt()` 包装、`menuList` 字段。
 ③ `hall_homing()` 明确为"霍尔未接入，以开机位置作为转盘零点"，并保留后续接入时的实现说明。
 
+v3.2（2026-09-12）修订（拆分 `tasks.cpp`）：原来一个 1100 行文件同时装着任务、主机动作、CLI、发牌流程，现拆成——
+
+| 文件 | 内容 | 对外接口 |
+|------|------|----------|
+| `tasks.cpp` | 任务创建 + 子板通信 / 编码器 / 显示 / 监控 | — |
+| `tasks_deal.cpp/.h` | 发牌控制任务（执行计划、错误收口） | `deal_get_status()`、`deal_error_active()`、`deal_sim_set/get_auto()` |
+| `host_actions.cpp/.h` | 主机命令动作 + 蓝牙接收任务 | `host_action_select/confirm/deal_start/stop/reset/status` |
+| `cli.cpp/.h` | 调试串口命令行 | `cli_poll()` |
+
+拆分只做搬迁与接口收敛，行为不变：跨文件访问的内部变量改成快照接口（`deal_get_status`），CLI 的串口读行逻辑收进 `cli_poll()`。
+
 与 v1 的逐项差异见 [architecture_v2_diff.md](architecture_v2_diff.md)；子板详细设计见 [subboard_architecture.md](subboard_architecture.md)。
 
 ---

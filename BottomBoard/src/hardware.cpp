@@ -146,6 +146,8 @@ static bool chassis_run_relative(long delta) {
     }
     // run() 到位即已完成减速；保持 EN 有效，锁轴等待下一条指令
     Serial.println("[STEP] done: ramped stop, driver remains enabled and holding");
+    // 到位后再等机械停稳（避免转盘还在振动就发牌导致偏位）
+    if (CHASSIS_MOVE_SETTLE_MS > 0) vTaskDelay(pdMS_TO_TICKS(CHASSIS_MOVE_SETTLE_MS));
     return true;
 }
 

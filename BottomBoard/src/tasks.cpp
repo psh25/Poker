@@ -732,6 +732,18 @@ void vDealTask(void *pv) {
     for (;;) {
         if (xSemaphoreTake(xDealSemaphore, portMAX_DELAY) != pdPASS) continue;
 
+        // 等状态机切到 DEALING（最多 500ms）：编码器/主机是"先给信号量、再置事件位"，
+        // 这里等一下可保证屏幕与状态先就位；若期间被 STOP/RESET 打断就放弃本次请求。
+        uint32_t t_state = millis();
+        while (state_get_current() != STATE_DEALING &&
+               (uint32_t)(millis() - t_state) < 500) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        if (state_get_current() != STATE_DEALING) {
+            Serial.println("[DEAL] 放弃启动：状态未进入 DEALING（可能刚被 STOP/RESET）");
+            continue;
+        }
+
         // 新一轮发牌：清空错误/计数，锁存方案
         s_deal_error_count = 0;
         s_deal_error_active = false;
@@ -753,6 +765,18 @@ void vDealTask(void *pv) {
         }
         const deal_plan_t *plan = &s_runningPlan;
         motion_abort_clear();          // 新一局：清掉上一次 STOP/RESET 留下的中止标志
+
+        // 模拟事件：只对 TEST 方案生效，且默认关闭（真实方案一律走真实外设）
+        bool simOn = s_sim_auto && (s_deal_scheme == DEAL_INDEX_TEST);
+
+        // 真实模式下要求子板在线，否则直接拒绝，避免白等一串超时
+        if (!simOn && !sub_comm_online()) {
+            deal_add_error("sub offline");
+            Serial.println("[DEAL] 子板不在线，已取消（先检查共地/串口接线）");
+            deal_fail();
+            continue;
+        }
+        if (simOn) Serial.println("[SIM] TEST 方案：使用模拟事件（simauto off 可关闭）");
 
         // 旋转测试：不发牌，底盘连续转若干圈后自动回 IDLE
         if (plan->mode == DEAL_MODE_ROTATE_TEST) {
@@ -782,9 +806,6 @@ void vDealTask(void *pv) {
         Serial.printf("[GAME] start %s: %u groups, %u cards\n",
                       plan->name, (unsigned)plan->groupCount, (unsigned)plan->totalCards);
 
-        // 模拟事件：只对 TEST 方案生效，且默认关闭（真实方案一律走真实外设）
-        bool simOn = s_sim_auto && (s_deal_scheme == DEAL_INDEX_TEST);
-        if (simOn) Serial.println("[SIM] TEST 方案：使用模拟事件（simauto off 可关闭）");
         uint16_t dealt = 0;
 
         // 按发牌计划逐组执行；每张牌的时序：

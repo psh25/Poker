@@ -45,7 +45,6 @@
 
 // ===== 时序 / 超时（ms，与底板协议一致）=====
 #define MOTOR_STARTUP_MS 50    // 电机启动完成判定（光敏模式用）
-#define CAMERA_TIMEOUT_MS 2000 // 摄像头识别超时 → 按未知牌处理
 #define CAM_TRIG_PULSE_MS 200   // PIN_CAM_TRIG 触发脉冲宽度（ms，**低电平有效**；OpenMV 要求 ≥5ms）
 
 // ===== 摄像头回传（OpenMV 主动发回 ASCII 文本行，子板只接收解析）=====

@@ -157,7 +157,10 @@ static uint8_t       s_cam_line_len = 0;
 
 void sub_camera_trigger(void) {
     if (s_cam_state != CAM_IDLE) {
-        dbg_println("[CAM] trigger ignored (session busy)");
+        // 上一次会话还没结束：这一次截图没有执行，必须明确告诉底板，
+        // 不能让 ACK 造成"命令已生效"的错觉（否则底板会白等一个不会来的结果）。
+        dbg_println("[CAM] trigger rejected (session busy) -> report CAM fail");
+        proto_send(EVT_ERROR_CAM_FAIL, NULL, 0);
         return;
     }
     // 首次触发才配置：GPIO20 平时保持原生 USB 状态，不碰它
@@ -167,6 +170,9 @@ void sub_camera_trigger(void) {
         digitalWrite(PIN_CAM_TRIG, HIGH);     // 空闲高电平（OpenMV P6 下降沿触发）
         Serial2.begin(CAM_UART_BAUD, SERIAL_8N1, PIN_CAM_RX, PIN_CAM_TX);
     }
+    // 清掉上一次残留：迟到的旧结果不能被当成这一次的识别结果
+    while (Serial2.available() > 0) (void)Serial2.read();
+
     s_cam_got_result = false;
     s_cam_cam_error = false;
     s_cam_payload_len = 0;

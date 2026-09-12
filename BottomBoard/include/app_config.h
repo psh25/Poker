@@ -41,22 +41,21 @@
 // 方案定义（预置游戏 + 自定义参数）见 deal_config.h：
 // 每种牌局只描述参数，发牌任务按生成好的“发牌组列表”统一执行。
 #define DECK_COUNT          8     // 实体牌堆位数量（转盘最多 8 个位置）
-#define ROTATE_WAIT_MS      1500  // 步进电机到位后的稳定等待（ms；备用）
-
 // 牌堆位置：顶层转盘目标角度（deg；电机实际转角 = ×33/10，见 CHASSIS_GEAR_*）
 static const int16_t kDeckAngles[DECK_COUNT] = { 0, 45, 90, 135, 180, 225, 270, 315 };
 
 // ================= 时序 / 超时（ms）=================
 #define ENCODER_DEBOUNCE_MS    5     // 编码器消抖（架构 v2 异常处理 8.1）
 #define ENCODER_LONG_PRESS_MS  2000  // 长按判定（GAME_ACTIVE：确认结束并回 IDLE）
-// 等待子板 EVT_CARD_OUT 的超时。子板光电门模式下一次卡牌恢复最多约 4s
-// （等牌 1.5s + 反转撤回 0.8s + 等门清空 0.5s + 重试）；真正的“卡牌”由子板主动
-// 上报 EVT_ERROR_CARD_JAM，不靠超时判断，所以这里放宽即可。
-#define PHOTO_TIMEOUT_MS       5000
+// 等待子板 EVT_CARD_OUT / EVT_DEAL_DONE 的超时。
+// 必须大于子板最坏情况（卡牌 + 撤回 + 重试全部走完才报错）：
+//   等牌 1.5s + 撤回 0.8s + 等门清空 0.5s + 重试 1.5s + 撤回 0.8s + 等门清空 0.5s ≈ 5.7s
+// 真正的“卡牌”由子板主动上报 EVT_ERROR_CARD_JAM，不靠超时判断；
+// 这里留足余量，避免子板还在自救、底板就先误判超时。
+#define PHOTO_TIMEOUT_MS       8000
 // 等待子板 EVT_CARD_VALUE 的超时。必须大于子板的 CAM_RESULT_TIMEOUT_MS(1200ms)，
 // 否则子板还没兜底上报，底板就先超时了（OpenMV 识别约 0.3~0.5s）
 #define CAMERA_TIMEOUT_MS      2000
-#define SUB_RESP_TIMEOUT_MS    1000  // 等待子板响应超时
 #define MONITOR_PERIOD_MS      500   // 系统监控巡检周期
 #define COMM_HEARTBEAT_MS      1000  // 子板心跳查询间隔
 #define COMM_DEAD_TIMEOUT_MS   3000  // 子板掉线判定阈值
@@ -74,6 +73,7 @@ static const int16_t kDeckAngles[DECK_COUNT] = { 0, 45, 90, 135, 180, 225, 270, 
 #define CHASSIS_RPM                 180.0F   // 电机轴转速（rpm）；顶层转速 = CHASSIS_RPM ÷ 3.3
 #define CHASSIS_ACCEL_STEPS_PER_S2  80000.0F // 梯形加减速（step/s²）,越小启停越柔和
 #define CHASSIS_SETTLE_MS           500      // 使能后稳定等待（ms）
+#define CHASSIS_MOVE_SETTLE_MS      100      // 每次转到目标位置后的稳定等待（ms）：等机械停稳再发牌
 #define CHASSIS_MOVE_TIMEOUT_MS     60000    // 旋转超时保护基准（ms）；长距离按预计用时自动放宽
 
 // ================= 子板串口 =================

@@ -36,6 +36,14 @@ v2.8（2026-09-11）修订：发牌方案扩展为**参数 + 发牌方式**两�
 
 v2.9（2026-09-12）修订（结构性修复）：① 模拟事件改为**默认关闭且只对 TEST 方案生效**；② 单张牌增加 `EVT_DEAL_DONE` 握手，子板收尾完成才发下一张；③ 子板事件**统一进 `xSubboardRxQueue`**（删除 `xCameraQueue` 等拆分的队列），摄像头错误不再漏判；④ 主机 `stop`/`reset` 通过"中止请求"**能立即中止**正在执行的发牌与底盘转动；⑤ 主机启动发牌要求方案已确认；⑥ 清理无效 ITC（`xEncoderQueue`/`xBluetoothTxQueue`/`xCardDetectedSem`/`xDeckReadySem`、两个无人使用的事件位）与未调用的占位钩子，牌面存储按 `[card, src]` 2 字节压缩。
 
+v3.0（2026-09-12）修订（健壮性 + 时序对齐）：
+① **掉线保护落地**：发牌前检查 `sub_comm_online()`，子板不在线直接拒绝启动（模拟/测试路径除外）；
+② **摄像头会话清理**：每次触发截图前清空 `Serial2` 残留，避免迟到的旧识别结果被当成这一张；
+③ `CMD_CAM_CAPTURE` 在子板会话忙时**回 `EVT_ERROR_CAM_FAIL`**，不再"回 ACK 但没执行"；
+④ **事件组不再丢位**：状态任务在一轮里把同批置位的事件全部处理完（原来命中第一个就 continue，会丢掉同批其它请求）；
+⑤ **启停原子性**：发牌任务开工前等状态机真正进入 `DEALING`（最多 500ms），避免"状态还没切、发牌已开始"；
+⑥ **时序对齐**：底板等 `EVT_CARD_OUT`/`EVT_DEAL_DONE` 的超时由 5s 放宽到 8s（覆盖子板"卡牌+撤回+重试"最坏约 5.7s）；底盘每次到位后增加 `CHASSIS_MOVE_SETTLE_MS`(100ms) 稳定等待，避免转盘还在振动就发牌；删除未使用的 `ROTATE_WAIT_MS` / `SUB_RESP_TIMEOUT_MS` / 子板 `CAMERA_TIMEOUT_MS`。
+
 与 v1 的逐项差异见 [architecture_v2_diff.md](architecture_v2_diff.md)；子板详细设计见 [subboard_architecture.md](subboard_architecture.md)。
 
 ---
@@ -391,7 +399,7 @@ flowchart TD
 | 底座步进堵转/超时 | `chassis_run_relative` 软件超时 | 停发脉冲并 `disableOutputs()` 断电，屏幕告警（DIAG 中断未接，暂无 SG_RESULT） |
 | 驱动过热 | 暂未实现（无 UART 读温度） | 依赖驱动散热与电源裕量，必要时外接测温 |
 | 零点传感器失效 | 归零流程步数超时保护 | 锁死电机，禁止任何旋转动作，屏幕上报故障代码 |
-| 滑环通讯掉线 | 通讯超时阈值 | 暂停发牌流程，等待链路恢复 |
+| 滑环通讯掉线 | 心跳 `COMM_HEARTBEAT_MS`(1s) + 掉线阈值 `COMM_DEAD_TIMEOUT_MS`(3s) | 发牌前检查在线状态，离线直接拒绝启动并报 `sub offline`；发牌中掉线由各项等待超时兜底 |
 | 步进失步校准 | 暂未实现（INDEX 引脚未接） | 如需校准需硬件提供一圈索引信号 |
 | 电机干扰防护 | 电机启停瞬间屏蔽传感器中断、多次采样取平均、串口 CRC | 防止霍尔/编码器误触发与串口乱码 |
 

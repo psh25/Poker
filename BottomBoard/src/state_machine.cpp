@@ -59,43 +59,41 @@ void state_transition_to(system_state_t next) {
 
 void vStateManagerTask(void *pv) {
     // 低(1) | 任意核心 | 事件组触发（永久阻塞）
+    //
+    // 注意：一次取出并清掉所有已置位的请求后，要在**同一轮**里把它们按优先级
+    // 全部处理完。原来的写法是命中第一个位就 continue，会把同一批里的其它请求
+    // 一起丢掉（例如"确认发牌"与"发牌完成"几乎同时置位时）。
+    const EventBits_t kMask = BIT_DEAL_COMPLETE | BIT_DEAL_ERROR |
+                              BIT_RESET | BIT_DEAL_CONFIRM |
+                              BIT_TEST_IDLE | BIT_TEST_DEALING | BIT_TEST_ACTIVE;
     system_state_t cur = STATE_IDLE;
     for (;;) {
-        EventBits_t bits = xEventGroupWaitBits(
-            xStateEventGroup,
-            BIT_DEAL_COMPLETE | BIT_DEAL_ERROR |
-            BIT_RESET | BIT_DEAL_CONFIRM |
-            BIT_TEST_IDLE | BIT_TEST_DEALING | BIT_TEST_ACTIVE,
-            pdTRUE,        // 清除位
-            pdFALSE,       // 任一满足即可
-            portMAX_DELAY);
-        (void)bits;
+        EventBits_t bits = xEventGroupWaitBits(xStateEventGroup, kMask,
+                                               pdTRUE,     // 取出并清位
+                                               pdFALSE,    // 任一满足即可
+                                               portMAX_DELAY);
 
-        // CLI 调试：强制切换到指定状态（测试各状态显示/功能）
-        if (bits & BIT_TEST_IDLE)        { state_transition_to(STATE_IDLE);        cur = STATE_IDLE;        continue; }
-        if (bits & BIT_TEST_DEALING)     { state_transition_to(STATE_DEALING);     cur = STATE_DEALING;     continue; }
-        if (bits & BIT_TEST_ACTIVE)      { state_transition_to(STATE_GAME_ACTIVE); cur = STATE_GAME_ACTIVE; continue; }
+        // 1) CLI 调试：强制切换到指定状态（优先级最高，只处理一个）
+        if (bits & BIT_TEST_IDLE)    { state_transition_to(STATE_IDLE);        cur = STATE_IDLE;        continue; }
+        if (bits & BIT_TEST_DEALING) { state_transition_to(STATE_DEALING);     cur = STATE_DEALING;     continue; }
+        if (bits & BIT_TEST_ACTIVE)  { state_transition_to(STATE_GAME_ACTIVE); cur = STATE_GAME_ACTIVE; continue; }
 
-        // 转移逻辑对应架构 v2 5.3 转移条件表
-        switch (cur) {
-        case STATE_IDLE:
-            if (bits & BIT_DEAL_CONFIRM) {
-                state_transition_to(STATE_DEALING); cur = STATE_DEALING;
-                // 若发牌任务已极快完成，避免丢失完成位（出错则停在 DEALING 显示错误）
-                if (bits & BIT_DEAL_COMPLETE) { state_transition_to(STATE_GAME_ACTIVE); cur = STATE_GAME_ACTIVE; }
-            }
-            break;
-        case STATE_DEALING:
-            if (bits & BIT_RESET) { state_transition_to(STATE_IDLE); cur = STATE_IDLE; }
-            // BIT_DEAL_ERROR：停在 DEALING，屏幕已显示错误，等待编码器按下重置
-            else if (bits & BIT_DEAL_COMPLETE) { state_transition_to(STATE_GAME_ACTIVE); cur = STATE_GAME_ACTIVE; }
-            break;
-        case STATE_GAME_ACTIVE:
-            // 长按编码器（或主机 CMD_STOP/CMD_RESET）→ 确认结束并直接回 IDLE
-            if (bits & BIT_RESET)            { state_transition_to(STATE_IDLE); cur = STATE_IDLE; }
-            break;
-        default:
-            break;
+        // 2) 复位优先级高于常规转移：STOP / RESET / GAME_ACTIVE 长按结束
+        if (bits & BIT_RESET) {
+            if (cur != STATE_IDLE) state_transition_to(STATE_IDLE);
+            cur = STATE_IDLE;
+            continue;
         }
+
+        // 3) 常规转移：同一批里的条件按顺序依次生效，不丢事件
+        if (cur == STATE_IDLE && (bits & BIT_DEAL_CONFIRM)) {
+            state_transition_to(STATE_DEALING);
+            cur = STATE_DEALING;
+        }
+        if (cur == STATE_DEALING && (bits & BIT_DEAL_COMPLETE)) {
+            state_transition_to(STATE_GAME_ACTIVE);
+            cur = STATE_GAME_ACTIVE;
+        }
+        // BIT_DEAL_ERROR：停在 DEALING，屏幕已显示错误，等编码器按下重置
     }
 }

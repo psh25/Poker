@@ -51,5 +51,8 @@ void display_handle_command(const display_cmd_t *cmd);
 void display_send_menu(void);   // 增量刷新（旋转/确认/切换发牌方式时用）
 void display_send_idle(void);   // 整屏重绘 IDLE（进入 IDLE 状态、屏幕测试用）
 
+// 上电自检汇总屏（setup() 里在显示任务启动前直接绘制；调用前必须先 display_init()）
+void display_show_selftest(uint16_t bits);
+
 // 发送一条调试提示（显示任务会停留约 0.7s 再继续）
 void send_display_debug(const char *msg);

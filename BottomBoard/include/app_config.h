@@ -60,6 +60,18 @@ static const int16_t kDeckAngles[DECK_COUNT] = { 0, 45, 90, 135, 180, 225, 270, 
 #define COMM_HEARTBEAT_MS      1000  // 子板心跳查询间隔
 #define COMM_DEAD_TIMEOUT_MS   3000  // 子板掉线判定阈值
 
+// ================= 开机自检（见 重要信息/自检流程方案.md）=================
+// 只做“不需要人配合”的项目：
+//   自动判定：引脚电平读回、BLE 广播、与子板串口握手（发 CMD_STATUS_QUERY 等应答）；
+//   人眼/听声确认：屏幕色块、底盘微动 —— 这类没有数字反馈，只能看/听；
+//   交互项（转编码器、手转电机试锁轴力矩、拿磁铁试霍尔）不在开机自检里做。
+#define SELFTEST_SUB_WAIT_MS        5000  // 等子板 EVT_READY/应答的最长时间（子板不在时才会等满）
+#define SELFTEST_SUB_READY_GRACE_MS 300   // 已收到其它帧后，再多等一会儿看有没有 EVT_READY
+#define SELFTEST_SUB_PING_MS        500   // 等待期间重发 CMD_STATUS_QUERY 的间隔
+#define SELFTEST_CHASSIS_MOVE       1     // 1 = 底盘做 ±SELFTEST_CHASSIS_DEG 微动（可观察）；0 = 跳过
+#define SELFTEST_CHASSIS_DEG        3.0F  // 微动角度（顶层，度）；来回各一次，净位移 0，不改变零点
+#define SELFTEST_SHOW_MS            2000  // 屏幕显示自检汇总的时间（ms）
+
 // ================= 测试模拟（方案四 TEST；摄像头/光敏未就绪）=================
 #define SIM_CAMERA_DELAY_MS    500   // 【临时测试】模拟摄像头识别耗时 0.5s；恢复时改回 5000
 #define SIM_PHOTO_DELAY_MS     300   // 模拟光敏确认：下发发牌指令后多久认为已出牌

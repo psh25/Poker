@@ -147,6 +147,24 @@ void proto_on_event(const proto_frame_t *frame) {
         return;
     }
 
+    // 子板自检结果（EVT_READY，开机自检 + CMD_SELF_TEST 复检都会发）：
+    // 只打印位图，不进业务队列——没有业务消费它，留在队列里反而会挤掉后面的真实事件。
+    if (frame->type == EVT_READY) {
+        if (frame->len >= 2) {
+            uint16_t b = (uint16_t)(frame->data[0] | ((uint16_t)frame->data[1] << 8));
+            Serial.printf("[BOT] SUB-READY: bits=0x%04X |%s%s%s%s%s%s\n", (unsigned)b,
+                          (b & SUB_ST_MOTOR)     ? " motor"     : "",
+                          (b & SUB_ST_CAM_CALIB) ? " cam-calib" : "",
+                          (b & SUB_ST_CAM_UART)  ? " cam-uart"  : "",
+                          (b & SUB_ST_PHOTO)     ? " photo"     : "",
+                          (b & SUB_ST_HOST_UART) ? " host-uart" : "",
+                          (b & SUB_ST_DONE)      ? " done"      : "");
+        } else {
+            Serial.println("[BOT] SUB-READY: (无结果位图，旧固件)");
+        }
+        return;
+    }
+
     busy_subboard_event(frame->type, frame->data, frame->len);
 
     // 所有业务事件（牌面 / 出牌 / 单张完成 / 错误）统一进同一个队列，

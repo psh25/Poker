@@ -100,9 +100,15 @@ void sub_state_handle_command(uint8_t cmd, const uint8_t *data, uint8_t len) {
         break;
     case CMD_SELF_TEST:
         busy_self_test();
+        // 复检结果同样上报（底板能看到最新位图）；只在开机自检时上报会漏掉后续复检
+        {
+            uint16_t b = sub_selftest_bits();
+            uint8_t d[2] = { (uint8_t)(b & 0xFF), (uint8_t)((b >> 8) & 0xFF) };
+            proto_send(EVT_READY, d, sizeof(d));
+        }
         break;
     case CMD_CAM_CAPTURE:
-        sub_camera_trigger();         // 拉高 PIN_CAM_TRIG 触发截图
+        sub_camera_trigger();         // 把 PIN_CAM_TRIG 拉低（下降沿）触发截图
         dbg_println("[SUB] CAM trigger");
         break;
     case CMD_STATUS_QUERY:

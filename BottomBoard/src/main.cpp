@@ -5,11 +5,12 @@
  * 启动顺序（架构 v2 第九章）：
  *   1. 硬件初始化（GPIO / UART / SPI）
  *   2. 创建内核对象（队列 / 信号量 / 互斥量 / 事件组）
- *   3. 底盘步进初始化（AccelStepper，参考程序同款控制，无 UART 电流配置）
- *   4. 霍尔两段式自动归零
- *   5. 外设自检（霍尔 / 编码器 / SD / 电机驱动 / 滑环串口）
- *   6. 创建任务（按优先级从低到高）
- *   7. 发送初始菜单，进入 IDLE
+ *   3. 屏幕初始化（含上电自检色块）—— 自检结果要画在屏幕上，所以排在第 5 步前面
+ *   4. 底盘步进初始化（AccelStepper，参考程序同款控制，无 UART 电流配置）
+ *   5. 霍尔归零（当前"以开机位置为零点"，见 hardware.cpp）
+ *   6. 外设自检（self_test：引脚电平 / BLE / 与子板握手 + 底盘微动 + 屏幕汇总）
+ *   7. 创建任务（按优先级从低到高）
+ *   8. 发送初始菜单，进入 IDLE
  */
 #include <Arduino.h>
 #include <freertos/FreeRTOS.h>
@@ -31,13 +32,14 @@ void setup() {
     create_itc();                      // 2
     ble_init();                        // 2.1 BLE(NUS)：收小程序命令帧 / 发状态帧
     init_interrupts();                 // 2.5 中断挂接（依赖内核对象）
-    tmc2209_init();                    // 3：底盘步进初始化（函数名沿用早期版本）
-    hall_homing();                     // 4
-    self_test();                       // 5
-    create_all_tasks();                // 6
+    display_init();                    // 3：屏幕（含上电自检色块）—— 自检要在屏幕上出结果
+    tmc2209_init();                    // 4：底盘步进初始化（函数名沿用早期版本）
+    hall_homing();                     // 5
+    self_test();                       // 6：外设自检（屏幕汇总 + 底盘微动 + 与子板握手）
+    create_all_tasks();                // 7
 
     display_cmd_t cmd = {};
-    cmd.type = DISPLAY_CMD_IDLE;       // 7：初始 IDLE 屏（未选择 + CONFIRM 按钮）
+    cmd.type = DISPLAY_CMD_IDLE;       // 8：初始 IDLE 屏（未选择 + CONFIRM 按钮）
     cmd.payload.menu.selectedIndex = 0;
     send_display_command(&cmd);
 

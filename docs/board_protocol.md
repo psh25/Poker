@@ -50,13 +50,13 @@ for b in [type, len] + data:
 | 0x03 | `CMD_STATUS_QUERY` | 无 | 查询状态 | `A5 03 00 3F AA` |
 | 0x04 | `CMD_SELF_TEST` | 无 | 触发自检 | `A5 04 00 54 AA` |
 | 0x05 | `CMD_RESET` | 无 | 复位状态机（错误恢复） | `A5 05 00 41 AA` |
-| 0x06 | `CMD_CAM_CAPTURE` | 无 | 触发摄像头截图（子板拉高 PIN_CAM_TRIG） | `A5 06 00 62 AA` |
+| 0x06 | `CMD_CAM_CAPTURE` | 无 | 触发摄像头截图（子板把 PIN_CAM_TRIG **拉低**一个脉冲，OpenMV P6 下降沿触发） | `A5 06 00 62 AA` |
 
 ## 4. 事件（子板 → 底板）
 
 | type | 名称 | data | 说明 |
 |------|------|------|------|
-| 0x81 | `EVT_READY` | 无 | 上电自检完成 |
+| 0x81 | `EVT_READY` | `[bitsLo, bitsHi]`（2 字节位图，见 4.2） | 自检完成（开机 + `CMD_SELF_TEST` 复检都发） |
 | 0x82 | `EVT_CARD_OUT` | 无 | 光敏检测到一张牌发出 |
 | 0x83 | `EVT_CARD_VALUE` | `[card, src]`：card = 牌面编码 0~55（见 4.1），src = 来源 | 牌面识别结果 |
 | 0x84 | `EVT_DEAL_DONE` | 无 | 单张发牌流程完成 |
@@ -90,6 +90,24 @@ for b in [type, len] + data:
 
 > 摄像头 → 子板走的是**另一套更简单的格式**（OpenMV 原生 ASCII 文本行 `RESULT:...`，无校验无序号），
 > 由子板翻译成上面的编码后再用板间帧上报；两段链路的分工见 [camera_protocol.md](camera_protocol.md)。
+
+### 4.2 自检结果位图（`EVT_READY` 的 data）
+
+`data[0]` = 低 8 位，`data[1]` = 高 8 位；**bit = 1 表示该项已执行且未发现异常**。
+没有数字反馈、只能靠人眼/听声确认的项（电机微动等）置 1 = “动作已执行，待人工观察”。
+
+| bit | 掩码 | 含义 |
+|-----|------|------|
+| 0 | `0x01` | 发牌电机：已执行正反转微动（需人眼确认） |
+| 1 | `0x02` | 摄像头校准：校准指令已发出并收到回应 |
+| 2 | `0x04` | 摄像头串口：已初始化（子板可下发文本指令） |
+| 3 | `0x08` | 光电门：已读到有效电平（当前电平已记录） |
+| 4 | `0x10` | 与底板串口：自检期间收到过底板数据 |
+| 7 | `0x80` | 自检流程完整执行完毕 |
+
+> 兼容：旧固件 `EVT_READY` 的 `len=0`，底板按“结果未知”处理，不会破坏流程。
+> 底板的 `CMD_SELF_TEST` 会让子板重跑自检并重新上报一帧 `EVT_READY`（底板打印 `[BOT] SUB-READY: bits=0x....`）。
+> 底板自身的自检位图是**本地**的（不跨板），定义见 `BottomBoard/include/hardware.h` 的 `BOT_ST_*`。
 
 ## 5. 确认机制（ACK）
 
@@ -135,7 +153,7 @@ sub status      → 底板: [CLI] -> SUB type=0x03 ... sent
                   子板: [SUB] RX: cmd=0x03 ... / [SUB] TX: ACK cmd=0x03
                   底板: [BOT] SUB-ACK: cmd=0x03
 sim cardout     → 底板模拟收到光敏事件，触发协议分发
-sub camcapture  → 子板拉高 PIN_CAM_TRIG 触发一次摄像头截图
+sub camcapture  → 子板把 PIN_CAM_TRIG 拉低一个脉冲，触发一次摄像头截图
 select 3        → 屏幕高亮方案 3
 game random players=3 hand=17 bottom=3 total=54  → 设 Custom 参数 + 切到随机，选中 Custom
 game order rand → 只切换发牌方式（等效 IDLE 下长按编码器）
@@ -152,7 +170,7 @@ help | dealstart | stop | statusquery | selftest | reset | camcapture | auto [n|
 
 ## 7. 新增命令（扩展指南）
 
-- **类型空间**：命令 `0x01~0x0F`（已用 0x01~0x06）、事件 `0x81~0x8F`（已用 0x81~0x88）；`0x10~0x7F`、`0x90~0xFF` 预留。
+- **类型空间**：命令 `0x01~0x0F`（已用 0x01~0x06）、事件 `0x81~0x8F`（已用 0x81~0x89）；`0x10~0x7F`、`0x90~0xFF` 预留。
 - **载荷**：每帧最多 32 字节（`PROTO_MAX_DATA`），CRC 自动计算。
 
 新增一条命令只需 4 步：

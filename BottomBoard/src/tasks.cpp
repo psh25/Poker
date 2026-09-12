@@ -208,7 +208,8 @@ void vEncoderTask(void *pv) {
 // ================= 屏幕显示任务 =================
 void vDisplayTask(void *pv) {
     // 低(1) | 任意核心 | 队列触发（事件驱动，非轮询）
-    display_init();   // 初始化屏幕（ST7735，横屏 160x128，见 display.cpp）
+    // 注意：display_init() 已在 setup() 里调用（自检汇总屏要在显示任务启动前画出来），
+    //       这里只处理显示命令。
     display_cmd_t cmd;
     for (;;) {
         if (xQueueReceive(xDisplayQueue, &cmd, portMAX_DELAY) == pdPASS) {

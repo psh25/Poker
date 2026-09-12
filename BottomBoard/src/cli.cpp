@@ -42,6 +42,8 @@ static void sub_debug_print_help(void) {
     Serial.println("[CLI] stop | reset                  - 停机回 IDLE / 复位（含子板）");
     Serial.println("[CLI] confirm                       - 确认当前方案（两段式第一步）");
     Serial.println("[CLI] subboard                      - 打印子板在线状态与心跳时间");
+    Serial.println("[CLI] selftest                     - 打印底板自检结果 + 当前可读状态（不动作、不阻塞）");
+    Serial.println("[CLI] sub selftest                 - 让子板重跑自检（含摄像头校准，约 2s 无响应）");
     Serial.println("[CLI] setstate <idle|dealing|active> - 强制切换状态（调试）");
     Serial.println("[CLI] sub <cmd> [hex data...]      - 底板→子板（自动组帧+CRC）");
     Serial.println("[CLI]      cmd: dealstart|stop|statusquery|selftest|reset|camcapture 或 hex");
@@ -124,6 +126,14 @@ static void sub_debug_cli_process(const char *line) {
         Serial.printf("[CLI] subboard: %s (last rx %lu ms ago)\n",
                       on ? "ONLINE" : "OFFLINE",
                       (unsigned long)(millis() - last));
+        return;
+    }
+
+    // selftest：打印底板自检结果位图 + 当前可读状态。
+    // 只读不动作：开机自检里的底盘微动、与子板握手都不在这里重跑（会阻塞通信任务）；
+    // 想重新验证某项，开机重启即可；想让子板重跑自检用 `sub selftest`。
+    if (strcmp(line, "selftest") == 0) {
+        selftest_report();
         return;
     }
 

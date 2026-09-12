@@ -1,6 +1,8 @@
 /**
- * 子板硬件层：初始化、中断、串口环形缓冲、TB6612 发牌电机驱动。
- * 摄像头 / 光敏按 docs/subboard_architecture.md 后续实现。
+ * 子板硬件层：初始化、中断、串口环形缓冲、TB6612 发牌电机驱动，
+ * 摄像头截图触发/回传解析（OpenMV 文本行）+ 指令下发（校准），光电门轮询去抖，
+ * 以及开机自检（busy_self_test）。
+ * 协议与时序见 docs/subboard_architecture.md、docs/camera_protocol.md。
  */
 #include <Arduino.h>
 #include <stdlib.h>
@@ -116,14 +118,17 @@ void sub_hardware_init(void) {
 }
 
 void sub_self_test(void) {
-    // 自检：光敏电平、电机驱动、摄像头可初始化 → 上报 EVT_READY（架构第八章）
+    // 自检（光电门电平 / 摄像头校准 / 电机微动 / 与底板串口）→ 上报 EVT_READY（架构第八章）
+    // EVT_READY 的 data = 2 字节结果位图（SUB_ST_*，见 protocol.h）；旧底板按 len=0 兼容处理
     busy_self_test();
-    proto_send(EVT_READY, NULL, 0);
+    uint16_t b = sub_selftest_bits();
+    uint8_t d[2] = { (uint8_t)(b & 0xFF), (uint8_t)((b >> 8) & 0xFF) };
+    proto_send(EVT_READY, d, sizeof(d));
 }
 
 // ================= 摄像头：截图触发 + 回传接收 =================
 //
-// 工作方式：子板不主动取图，只负责“拉高 TRIG → 等摄像头把识别结果发回来”。
+// 工作方式：子板不主动取图，只负责“把 TRIG 拉低（下降沿）→ 等摄像头把识别结果发回来”。
 //
 // 【摄像头 → 子板：OpenMV 原生 ASCII 文本行】（详见 docs/camera_protocol.md）
 //   每条结果一行，以 \r\n 结束：RESULT:<结果>
@@ -136,6 +141,9 @@ void sub_self_test(void) {
 //
 // 接收路径：截图等待窗口内，主循环 sub_camera_service() 轮询 Serial2 并解析（见下）。
 // 结果去向：解析成功后发 EVT_CARD_VALUE（data = 识别载荷）；超时未回传时按 CAM_EMPTY_ON_TIMEOUT 处理。
+//
+// 【子板 → 摄像头：指令下发】反方向用同一根 UART（PIN_CAM_TX → 摄像头 RX），
+//   格式与回传同风格：ASCII 文本行 + \r\n 结尾；当前只用于开机自检的校准指令（见下）。
 
 // 接收方式：在截图等待窗口内轮询 Serial2（不用 onReceive 中断）。
 // 原因：摄像头未接时 RX 引脚浮空，中断会被噪声反复触发；轮询只在等待窗口读，
@@ -143,7 +151,7 @@ void sub_self_test(void) {
 
 #define CAM_LINE_MAX  40           // 单行最大长度（"RESULT:diamond_10" 约 18）
 
-// 截图会话状态：IDLE → PULSE（TRIG 高）→ WAIT（等回传）→ IDLE
+// 截图会话状态：IDLE → PULSE（TRIG 拉低，触发中）→ WAIT（等回传）→ IDLE
 typedef enum { CAM_IDLE = 0, CAM_PULSE, CAM_WAIT } cam_session_t;
 static cam_session_t s_cam_state = CAM_IDLE;
 static uint32_t      s_cam_t0 = 0;
@@ -151,9 +159,29 @@ static uint8_t       s_cam_payload[2];        // [card, src]
 static uint8_t       s_cam_payload_len = 0;
 static bool          s_cam_got_result = false;
 static bool          s_cam_cam_error = false; // 收到 RESULT:ERROR
-static bool          s_cam_inited = false;
+static bool          s_cam_uart_inited = false;  // Serial2 是否已初始化
+static bool          s_cam_trig_inited = false;  // PIN_CAM_TRIG 是否已配置成输出
 static char          s_cam_line[CAM_LINE_MAX];
 static uint8_t       s_cam_line_len = 0;
+
+// ---- 摄像头链路初始化（拆成两半，谁用谁初始化）----
+// UART：发指令与收回传都要用，可以单独提前初始化。
+static void cam_ensure_uart(void) {
+    if (s_cam_uart_inited) return;
+    s_cam_uart_inited = true;
+    Serial2.begin(CAM_UART_BAUD, SERIAL_8N1, PIN_CAM_RX, PIN_CAM_TX);
+}
+
+// TRIG 脚：只在真正要截图时才配置成输出。
+// 原因（见 pins_config.h）：PIN_CAM_TRIG = GPIO20 是 ESP32-S3 原生 USB 的 D+，
+// 一旦配成输出，原生 USB 串口日志就不可用（得从 CH340 口看日志）。
+// 所以开机自检里**不碰**这个脚——发校准指令只需要 UART。
+static void cam_ensure_trig(void) {
+    if (s_cam_trig_inited) return;
+    s_cam_trig_inited = true;
+    pinMode(PIN_CAM_TRIG, OUTPUT);
+    digitalWrite(PIN_CAM_TRIG, HIGH);     // 空闲高电平（OpenMV P6 下降沿触发）
+}
 
 void sub_camera_trigger(void) {
     if (s_cam_state != CAM_IDLE) {
@@ -163,13 +191,8 @@ void sub_camera_trigger(void) {
         proto_send(EVT_ERROR_CAM_FAIL, NULL, 0);
         return;
     }
-    // 首次触发才配置：GPIO20 平时保持原生 USB 状态，不碰它
-    if (!s_cam_inited) {
-        s_cam_inited = true;
-        pinMode(PIN_CAM_TRIG, OUTPUT);
-        digitalWrite(PIN_CAM_TRIG, HIGH);     // 空闲高电平（OpenMV P6 下降沿触发）
-        Serial2.begin(CAM_UART_BAUD, SERIAL_8N1, PIN_CAM_RX, PIN_CAM_TX);
-    }
+    cam_ensure_uart();
+    cam_ensure_trig();                        // 首次触发才把 GPIO20 配成输出
     // 清掉上一次残留：迟到的旧结果不能被当成这一次的识别结果
     while (Serial2.available() > 0) (void)Serial2.read();
 
@@ -181,6 +204,59 @@ void sub_camera_trigger(void) {
     s_cam_state = CAM_PULSE;
     digitalWrite(PIN_CAM_TRIG, LOW);          // 下降沿 → 触发拍照
     dbg_println("[CAM] TRIG low (trigger)");
+}
+
+// ---- 子板 → 摄像头：下发一行文本指令（ASCII + CRLF，与 RESULT: 回传同风格）----
+static void cam_send_line(const char *line) {
+    cam_ensure_uart();
+    // 先清掉残留，避免把上一条旧行当成这次指令的回应
+    while (Serial2.available() > 0) (void)Serial2.read();
+
+    size_t n = strlen(line);
+    Serial2.write((const uint8_t *)line, n);
+    Serial2.flush();                     // 等字节真正发出去（一行很短，阻塞可忽略）
+
+    dbg_printf("[CAM] TX cmd (%u bytes):", (unsigned)n);
+    for (size_t i = 0; i < n; i++) dbg_printf(" %02X", (unsigned char)line[i]);
+    dbg_println();                       // 十六进制便于核对结尾是不是 0D 0A（CRLF）
+}
+
+// 摄像头校准（开机自检用）：先发校准指令，再等摄像头回应。
+// 返回 true = 收到回应且不是 RESULT:ERROR。
+// 说明：OpenMV 端 main_standalone.py 目前不读 UART，因此“无回应”在摄像头改代码前属正常现象，
+//       自检只把它记为“未回应”，不当成致命错误。
+bool sub_camera_calibrate(uint32_t waitMs) {
+    dbg_println("[CAM] calibrate: send command, then wait for reply...");
+    cam_send_line(CAM_CMD_CALIBRATE);
+
+    char     line[CAM_LINE_MAX];
+    uint8_t  n = 0;
+    bool     got = false;
+    bool     camErr = false;
+
+    uint32_t t0 = millis();
+    while ((uint32_t)(millis() - t0) < waitMs) {
+        while (Serial2.available() > 0) {
+            char c = (char)Serial2.read();
+            if (c == '\n' || c == '\r') {
+                if (n > 0) {                       // 收到整行（去掉 \r\n）
+                    line[n] = '\0';
+                    n = 0;
+                    dbg_printf("[CAM] calib rx: %s\n", line);
+                    if (strncmp(line, "RESULT:ERROR", 12) == 0) camErr = true;
+                    else                                        got = true;
+                }
+            } else if (n < CAM_LINE_MAX - 1) {
+                line[n++] = c;
+            }
+        }
+        delay(2);
+    }
+
+    if (camErr)          dbg_println("[CAM] calibrate: camera reported RESULT:ERROR");
+    else if (!got)       dbg_println("[CAM] calibrate: no reply (OpenMV 端尚未实现 UART 命令接收)");
+    else                 dbg_println("[CAM] calibrate: reply received");
+    return got && !camErr;
 }
 
 // OpenMV 文本结果 → 牌面编码。成功返回 true（card/src 已填好）。
@@ -333,31 +409,86 @@ void busy_motor_stop(void) {
     ledcWrite(MOTOR_PWM_CH, 0);
 }
 
-// 电机自检：正转 300ms → 刹车 MOTOR_BRAKE_MS → 反转 300ms → 停（开机与 mtest 命令用）
-// 如果电机完全不转，说明引脚 / 驱动供电 / 接线有问题
+// 电机自检：微动正转 SELFTEST_MOTOR_FWD_MS → 刹车 MOTOR_BRAKE_MS → 反转 SELFTEST_MOTOR_REV_MS → 停
+// （开机自检与 mtest 命令用）
+// 正转用 SELFTEST_MOTOR_FWD_MS 而**不用**出牌时间 MOTOR_FWD_MS：自检只抖一下，
+// 避免真的把牌发出去；反转稍长，把可能被推出来的牌退回原位。
+// 如果电机完全不转，说明引脚 / 驱动供电 / 接线有问题。
 void motor_self_test(void) {
     // 先动电机再打印：即使调试串口异常也不会卡住自检动作
     busy_motor_start();
-    dbg_println("[MOT] self-test: forward 300ms...");
-    delay(300);
+    dbg_printf("[MOT] self-test: forward %dms...\n", SELFTEST_MOTOR_FWD_MS);
+    delay(SELFTEST_MOTOR_FWD_MS);
     if (MOTOR_BRAKE_MS > 0) {
         busy_motor_brake();
         dbg_println("[MOT] self-test: brake...");
         delay(MOTOR_BRAKE_MS);
     }
     busy_motor_start_reverse();
-    dbg_println("[MOT] self-test: reverse 300ms...");
-    delay(300);
+    dbg_printf("[MOT] self-test: reverse %dms...\n", SELFTEST_MOTOR_REV_MS);
+    delay(SELFTEST_MOTOR_REV_MS);
     busy_motor_stop();
     dbg_println("[MOT] self-test done (motor should have twitched twice)");
 }
 
-// ================= 占位函数（TODO：按架构实现具体逻辑）=================
+// ================= 开机自检（子板，见 重要信息/自检流程方案.md）=================
+// 只做“不需要人配合”的项目：自动读取 + 制造可观察现象。
+// 需要人配合的项（转编码器、手转电机试锁轴力矩、拿磁铁试霍尔）不在开机自检里做。
+// 结果同时写进串口日志（人眼看）和 EVT_READY 位图（底板看，SUB_ST_*）。
+static uint16_t s_st_bits = 0;
+
+uint16_t sub_selftest_bits(void) { return s_st_bits; }
+
 void busy_self_test(void) {
-    // 上电自检：先让电机正/反转各抖一下，肉眼确认驱动链路正常
+    s_st_bits = 0;
+    dbg_println("[ST] ------- sub self-test -------");
+
+    // 1) 光电门：读一次电平（能读即算这一项可用；读数本身要对着现场看）
+    bool photo0 = sub_photo_present();
+    dbg_printf("[ST] photo gate : %s (PIN_PHOTO=%d)\n",
+               photo0 ? "CARD PRESENT (LOW)" : "clear (HIGH)", PIN_PHOTO);
+    if (photo0) dbg_println("[ST]   ^ 出牌口若确实没牌，检查光电门接线/供电");
+    s_st_bits |= SUB_ST_PHOTO;
+
+    // 2) 摄像头校准：**先发校准指令，再动电机**。
+    //    顺序原因：电机一转牌堆就错位，摄像头按当前画面做的校准就白做了；
+    //    CAM_CALIB_WAIT_MS 既是等回应的时长，也保证校准先做在前面。
+    if (sub_camera_calibrate(CAM_CALIB_WAIT_MS)) s_st_bits |= SUB_ST_CAM_CALIB;
+    s_st_bits |= SUB_ST_CAM_UART;          // 上一步已经初始化过 Serial2
+
+    // 3) 发牌电机微动（可观察项：应看到/听到电机抖两下）
     motor_self_test();
+    s_st_bits |= SUB_ST_MOTOR;
+
+    // 4) 再看一次光电门：若刚才有牌被推动，这里能看到电平变化
+    bool photo1 = sub_photo_present();
+    if (photo1 != photo0) {
+        dbg_printf("[ST] photo gate : changed after motor test -> %s\n",
+                   photo1 ? "CARD PRESENT (LOW)" : "clear (HIGH)");
+    } else {
+        dbg_println("[ST] photo gate : unchanged after motor test");
+    }
+
+    // 5) 与底板串口：自检期间是否已收到底板数据（底板自检会周期发 CMD_STATUS_QUERY）
+    bool hostSeen = (s_rx_head != s_rx_tail);
+    dbg_printf("[ST] host uart  : %s\n",
+               hostSeen ? "data received" : "no data yet (底板可能还没启动)");
+    if (hostSeen) s_st_bits |= SUB_ST_HOST_UART;
+
+    // 汇总
+    s_st_bits |= SUB_ST_DONE;
+    {
+        const char    *names[] = { "motor", "cam-calib", "cam-uart", "photo", "host-uart" };
+        const uint16_t masks[] = { SUB_ST_MOTOR, SUB_ST_CAM_CALIB, SUB_ST_CAM_UART,
+                                   SUB_ST_PHOTO, SUB_ST_HOST_UART };
+        for (uint8_t i = 0; i < 5; i++) {
+            dbg_printf("[ST]   %-9s : %s\n", names[i], (s_st_bits & masks[i]) ? "OK" : "--");
+        }
+    }
+    dbg_printf("[ST] ------- done: bits=0x%04X -------\n", (unsigned)s_st_bits);
 }
 
+// ================= 占位函数（TODO：按架构实现具体逻辑）=================
 void busy_error_handle(uint8_t errorType) {
     // TODO: 本地错误处理（上报底板 / 屏幕显示）
     (void)errorType;

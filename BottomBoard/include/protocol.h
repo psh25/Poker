@@ -61,6 +61,16 @@
 #define CARD_SRC_LOWCONF   2   // 低置信度（按未知处理）
 #define CARD_SRC_DEBUG     3   // 调试 / 模拟
 
+// ================= 开机自检结果位图（EVT_READY 的 data，共 2 字节）=================
+// 子板自检结果，随 EVT_READY 上报；data[0] = 低 8 位，data[1] = 高 8 位。
+// bit = 1 表示“该项已执行且未发现异常”；人眼确认项置 1 = “动作已执行，待人工观察”。
+#define SUB_ST_MOTOR      0x0001u  // bit0 发牌电机：已执行正反转微动（需人眼确认）
+#define SUB_ST_CAM_CALIB  0x0002u  // bit1 摄像头校准：校准指令已发出并收到回应
+#define SUB_ST_CAM_UART   0x0004u  // bit2 摄像头串口：已初始化（子板可下发文本指令）
+#define SUB_ST_PHOTO      0x0008u  // bit3 光电门：已读到有效电平（当前电平已记录）
+#define SUB_ST_HOST_UART  0x0010u  // bit4 与底板串口：自检期间收到过底板数据
+#define SUB_ST_DONE       0x0080u  // bit7 自检流程完整执行完毕
+
 // 底板 → 子板：命令（0x01~0x0F）
 typedef enum {
     CMD_DEAL_START   = 0x01,  // 发一张牌
@@ -68,7 +78,7 @@ typedef enum {
     CMD_STATUS_QUERY = 0x03,  // 查询状态
     CMD_SELF_TEST    = 0x04,  // 触发自检
     CMD_RESET        = 0x05,  // 复位状态机（错误恢复）
-    CMD_CAM_CAPTURE  = 0x06   // 触发摄像头截图（子板拉高 PIN_CAM_TRIG）
+    CMD_CAM_CAPTURE  = 0x06   // 触发摄像头截图（子板把 PIN_CAM_TRIG 拉低，OpenMV 下降沿）
 } proto_cmd_t;
 
 // 子板 → 底板：事件（0x81~0x8F）

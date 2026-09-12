@@ -16,7 +16,7 @@
 |---|---|---|---|
 | 识别触发 | P6 | `PIN_CAM_TRIG`（GPIO20） | 子板 → 摄像头 |
 | UART 发送 | P4 / TX | `PIN_CAM_RX`（GPIO46） | 摄像头 → 子板 |
-| UART 接收 | P5 / RX | `PIN_CAM_TX`（GPIO10） | 子板 → 摄像头（当前不用） |
+| UART 接收 | P5 / RX | `PIN_CAM_TX`（GPIO10） | 子板 → 摄像头（**只用来下发指令**，如开机自检的校准，见第 7 节） |
 | 地 | GND | GND | **必须共地** |
 
 UART 参数：**115200，8N1，无流控**。逻辑电平 3.3V。
@@ -111,10 +111,47 @@ A5 83 02 <card> <src> <crc8> AA
 | 1.2s 内没收到结果 | 由 `CAM_EMPTY_ON_TIMEOUT` 决定：默认发 `[55, 1]` 继续；改为 0 则报 `EVT_ERROR_CAM_FAIL` | `[CAM] timeout -> UNKNOWN src=TIMEOUT (debug)` |
 | 收到不认识的文本 | 丢弃并继续等 | `[CAM] cannot parse: xxx` / `[CAM] ignore line: xxx` |
 
-## 7. 联调建议
+## 7. 子板 → 摄像头：校准指令（开机自检用）
+
+反方向（子板 `PIN_CAM_TX` → 摄像头 RX / P5）用**同一根 UART、同一套格式风格**：ASCII 文本行 + `\r\n`。
+
+```
+CALIBRATE\r\n
+```
+
+| 项 | 值 |
+|---|---|
+| 编码 | 纯 ASCII 大写，**CRLF（`\r\n`）结尾** —— 与 `RESULT:...\r\n` 完全同风格 |
+| 串口参数 | 115200，8N1，无流控（与回传一致） |
+| 何时发 | **开机自检时发一次**（子板 `sub_camera_calibrate()`）；CLI `sub selftest` 复检时也会发 |
+| 之后 | 子板等 `CAM_CALIB_WAIT_MS`(1.5s) 收回应；收到任意一行即视为“已回应” |
+| 摄像头建议回 | 成功回一行 `CAL:OK\r\n`（内容不限）；校准失败可回 `RESULT:ERROR\r\n`，子板按“校准失败”处理 |
+
+> ⚠️ **摄像头端目前不读 UART**：`重要信息/STANDALONE_IO_PROTOCOL(1).md` 第 7 节写明当前
+> `main_standalone.py` 的 UART 只有输出、没有输入。所以本指令**要在摄像头端加接收处理后才生效**；
+> 在那之前子板自检只会打印 `[CAM] calibrate: no reply`，并让 `SUB_ST_CAM_CALIB` 位保持 0（不算失败）。
+
+### 7.1 为什么“先校准、再转电机”
+
+自检要转一下发牌电机（确认驱动链路），但**电机一转牌就会错位**，摄像头按当前画面做的校准就白做了。
+所以子板自检的顺序固定为：
+
+```
+读光电门电平 → 发 CALIBRATE（等 CAM_CALIB_WAIT_MS）→ 电机微动 → 再看一次光电门 → 查与底板串口
+```
+
+其中电机微动的正转时长用 `SELFTEST_MOTOR_FWD_MS`(150ms) 而**不是**出牌时长 `MOTOR_FWD_MS`(390ms)，
+确保只抖一下、不会真的把牌发出去；反转用 `SELFTEST_MOTOR_REV_MS`(300ms) 把可能被推出来的牌退回。
+
+要改指令内容，只改子板 `SubBoard/include/app_config.h` 的 `CAM_CMD_CALIBRATE`
+（保持“纯 ASCII + `\r\n` 结尾”即可），并同步摄像头端。
+
+## 8. 联调建议
 
 1. **先单独测摄像头**：USB-TTL 接 OpenMV 的 P4(TX)，串口助手 115200 看有没有 `RESULT:...`；把 P6 用杜邦线碰一下 GND（制造下降沿）即可触发一次。
 2. **再接子板**：观察子板串口是否打印 `[CAM] result card=...`；没有就查共地和 TX/RX 是否接反。
 3. 子板打印 `cannot parse` → 检查摄像头输出的花色拼写（必须是 `spade/heart/club/diamond`）。
 4. 子板打印 `timeout` → 确认 P6 的下降沿真的产生了（空闲必须是高电平），以及 OpenMV 模板是否加载成功。
 5. 全链路：底板串口应能看到牌面事件，`dealinfo` 里能看到进度推进。
+6. **校准指令**：摄像头端加好接收处理后，子板自检应打印 `[CAM] TX cmd (11 bytes): 43 41 4C 49 42 52 41 54 45 0D 0A`
+   与 `[CAM] calib rx: ...`；底板串口则打印 `SUB-READY: bits=0x....| cam-calib`。

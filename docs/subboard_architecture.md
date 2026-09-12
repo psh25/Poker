@@ -10,11 +10,18 @@ v1.2（2026-09-08）修订：引脚按最新版 `include/pins_config.h` 更新�
 
 v1.3（2026-09-10）修订：定时出牌在正转与反转之间新增 BRAKE（短刹车）状态，缓解换向电流冲击；对应新增 `MOTOR_BRAKE_MS` 与 `busy_motor_brake()`。
 
-v1.4（2026-09-10）修订：新增 `CMD_CAM_CAPTURE` 截图触发命令；子板收到后拉高 `PIN_CAM_TRIG` 一个脉冲（`CAM_TRIG_PULSE_MS`），截图时序由底板发牌流程统一控制。
+v1.4（2026-09-10）修订：新增 `CMD_CAM_CAPTURE` 截图触发命令；子板收到后把 `PIN_CAM_TRIG` **拉低**一个脉冲（`CAM_TRIG_PULSE_MS`，OpenMV P6 下降沿触发），截图时序由底板发牌流程统一控制。
 
 v1.5（2026-09-10）修订：子板**不主动取图**，改为接收摄像头回传：`Serial2`（PIN_CAM_RX）中断 → 环形缓冲 → 主循环解析 → 发 `EVT_CARD_VALUE`；超时未回传按 `CAM_EMPTY_ON_TIMEOUT` 发空牌（保留调试路径）。新增 `EVT_STATUS` 心跳应答（`CMD_STATUS_QUERY` 的响应）。
 
-v1.6（2026-09-12）修订：摄像头改为 OpenMV 原生 ASCII 文本行（`RESULT:spade_A` 等），子板按行解析并翻译成牌面编码，摄像头代码不用改；触发极性改为**下降沿**（空闲高、拉低 ≥5ms）。光电门（原光敏）改为**轮询 + 去抖**：等“有牌”→ 等“无牌”确认牌完整通过；新增卡牌保护 `RETRACT`/`RETRACT_WAIT`（反转撤回，恢复则自动重试，失败则报 `EVT_ERROR_CARD_JAM` 等复位）。
+v1.6（2026-09-12）修订：摄像头改为 OpenMV 原生 ASCII 文本行（`RESULT:spade_A` 等），子板按行解析并翻译成牌面编码，摄像头代码不用改；触发极性改为**下降沿**（空闲高、拉低 ≥5ms）；接收方式由 `onReceive` 中断 + 环形缓冲改为**在截图等待窗口内轮询 `Serial2` 逐行解析**（避免摄像头未接时浮空引脚引发中断风暴，见 5.7）。光电门（原光敏）改为**轮询 + 去抖**：等“有牌”→ 等“无牌”确认牌完整通过；新增卡牌保护 `RETRACT`/`RETRACT_WAIT`（反转撤回，恢复则自动重试，失败则报 `EVT_ERROR_CARD_JAM` 等复位）。
+
+v1.7（2026-09-12）修订（**开机自检落地**）：`busy_self_test()` 从“只抖一下电机”扩成完整的开机自检，只做**不需要人配合**的项目：
+光电门电平读取、**摄像头校准指令下发**（新增子板 → 摄像头方向，与回传同风格 `CALIBRATE\r\n`，见 5.7）、
+发牌电机微动（正转改用 `SELFTEST_MOTOR_FWD_MS`(150ms)，**明显短于出牌时长**，确保不会真的把牌发出去）、
+与底板串口是否已收到数据。`EVT_READY` 从空载荷改为 **2 字节结果位图**（`SUB_ST_*`，见 protocol.h / board_protocol.md 4.2）。
+自检顺序固定为“**先发摄像头校准、再转电机**”：电机一转牌就错位，会把按当前画面做的校准弄白做。
+交互项（转编码器、手转电机试锁轴力矩、拿磁铁试霍尔）不在开机自检里做。
 
 ## 一、职责定位
 
@@ -36,9 +43,9 @@ v1.6（2026-09-12）修订：摄像头改为 OpenMV 原生 ASCII 文本行（`RE
 
 特征：
 
-- 没有两个需要同时竞争 CPU 的重型任务；电机启动后不再占用 CPU，传感器等待走中断。
-- 实时性要求集中在“及时响应底板命令”和“光敏触发捕获”，两者用中断即可满足。
-- 摄像头识别虽耗时，但主要是等待硬件就绪（接口按 UART 预留，型号待定），CPU 大部分时间空闲，用状态机等待标志位即可。
+- 没有两个需要同时竞争 CPU 的重型任务；电机启动后不再占用 CPU，传感器采样与超时判断都只是主循环里的轻量轮询。
+- 实时性要求集中在“及时响应底板命令”（串口 RX 中断 + 环形缓冲）和“光电门电平采样”（主循环轮询 + 去抖），两者都不需要 RTOS。
+- 摄像头识别虽耗时，但主要是等待硬件就绪（OpenMV H7 Plus，UART 文本行回传，子板只接收），CPU 大部分时间空闲，用状态机等待标志位即可。
 
 ### 2.2 裸机 vs RTOS 对比
 
@@ -65,7 +72,7 @@ v1.6（2026-09-12）修订：摄像头改为 OpenMV 原生 ASCII 文本行（`RE
 | WAIT_GONE | 光电门模式：等“无牌”确认牌通过 | “无牌”稳定 `PHOTO_GONE_MS` → 上报 `EVT_CARD_OUT`；“有牌”持续 `PHOTO_JAM_MS` → 判卡 |
 | RETRACT | 卡牌：反转撤回 | 反转 `PHOTO_RETRACT_MS` 把牌退回 |
 | RETRACT_WAIT | 撤回后等门清空 | 门恢复“无牌” → 自动重试这一张；`PHOTO_CLEAR_MS` 内仍“有牌” → ERROR |
-| CAM_CAPTURE | 摄像头拍照 + 识别 | 触发拍照、读取图像、识别牌面（含 2s 超时） |
+| ~~CAM_CAPTURE~~ | **不占状态机状态** | 截图触发 + 回传解析在 `hardware.cpp` 的“截图会话”里独立完成（见 5.7），状态机只管电机/光电门流程 |
 | SEND_BACK | 打包回传底板 | 组装事件帧发送，完成后回到 IDLE |
 | ERROR | 物理层异常 | 立即上报错误事件，停止电机，等待底板指令（重试/复位） |
 
@@ -83,7 +90,8 @@ stateDiagram-v2
     RETRACT --> RETRACT_WAIT : 反转撤回结束
     RETRACT_WAIT --> MOTOR_ON : 门已清空 → 自动重试这一张
     RETRACT_WAIT --> ERROR : 门仍被占（撤回失败）
-    CAM_CAPTURE --> SEND_BACK : 识别完成（成功或标记未知牌）
+    %% 截图会话（CAM_CAPTURE）不占状态机状态：触发与回传解析由 hardware.cpp 独立处理，见 5.7
+    BRAKE --> SEND_BACK : 出牌结束（定时模式经 REVERSE/PAUSE）
     SEND_BACK --> IDLE : EVT_DEAL_DONE 发送完成
     IDLE --> ERROR : 自检失败（上电或底板触发）
     ERROR --> IDLE : 收到底板复位/重试指令
@@ -109,7 +117,7 @@ stateDiagram-v2
 | RETRACT → RETRACT_WAIT | 反转 `PHOTO_RETRACT_MS` 结束 | 停电机，等门恢复“无牌” |
 | RETRACT_WAIT → MOTOR_ON | 门恢复“无牌”且在重试次数内 | 自动重试这一张（≤ `PHOTO_JAM_RETRY_MAX`） |
 | RETRACT_WAIT → ERROR | `PHOTO_CLEAR_MS` 内仍“有牌”，或重试超限 | 停止电机；上报 `EVT_ERROR_CARD_JAM` |
-| CAM_CAPTURE → SEND_BACK | 识别完成（该状态当前不由状态机进入） | 组装 `EVT_CARD_VALUE`（含未知牌标志） |
+| （截图会话，非状态机状态） | 收到合法回传 / 等 `CAM_RESULT_TIMEOUT_MS` 超时 | `hardware.cpp` 直接发 `EVT_CARD_VALUE [card, src]`（不回 IDLE，不影响状态机） |
 | SEND_BACK → IDLE | 事件帧发送完成 | 清空单卡缓冲，回到待命 |
 | ERROR → IDLE | 收到底板复位/重试指令 | 复位状态机，重新待命 |
 
@@ -157,13 +165,13 @@ stateDiagram-v2
 
 | 事件 | 数据 | 说明 |
 |------|------|------|
-| `EVT_READY` | 自检结果 | 上电自检完成，进入待命 |
-| `EVT_CARD_OUT` | 成功标志 | 光敏检测到一张牌发出 |
-| `EVT_CARD_VALUE` | 牌序号、花色、点数、未知牌标志 | 牌面识别结果 |
-| `EVT_DEAL_DONE` | — | 单张发牌流程完成 |
-| `EVT_ERROR_CARD_JAM` | 超时值 | 光敏超时/卡牌，**立即上报** |
-| `EVT_ERROR_MOTOR_STALL` | 电流/时间 | 发牌电机堵转（如支持检测） |
-| `EVT_ERROR_CAM_FAIL` | 错误码 | 摄像头识别失败（该张标记为未知牌） |
+| `EVT_READY` | 无（空载荷） | 上电自检完成，进入待命（自检明细待实装） |
+| `EVT_CARD_OUT` | 无（空载荷） | 光电门确认一张牌完整通过 |
+| `EVT_CARD_VALUE` | `[card, src]` | 牌面识别结果：`card` = 牌面编码 0~55、`src` = 来源（见 [board_protocol.md](board_protocol.md) 4.1） |
+| `EVT_DEAL_DONE` | 无（空载荷） | 单张发牌流程完成 |
+| `EVT_ERROR_CARD_JAM` | 无（空载荷） | 光电门超时/卡牌，**立即上报** |
+| `EVT_ERROR_MOTOR_STALL` | 无（空载荷） | 发牌电机堵转（**未实装**：TB6612 无电流检测脚） |
+| `EVT_ERROR_CAM_FAIL` | 无（空载荷） | 摄像头回 `RESULT:ERROR`，或超时且 `CAM_EMPTY_ON_TIMEOUT=0` |
 | `EVT_STATUS` | [state, error, countLo, countHi] | 状态回执：`CMD_STATUS_QUERY` 的应答（心跳） |
 
 ### 5.5 实时上报原则（重点）
@@ -177,23 +185,40 @@ stateDiagram-v2
 
 最新版硬件配置已移除调试 RGB LED（`pins_config.h` 中无 `PIN_LED_*`），链路观察改为串口日志：收到任意字节/完整帧/回发 ACK 都会在调试串口打印（见 [board_protocol.md](board_protocol.md)），USB 串口手动注入命令同样会回显解析结果。
 
-### 5.7 摄像头回传（子板只接收，不主动取图）
+### 5.7 摄像头：截图触发 / 回传接收 / 指令下发
 
 子板收到 `CMD_CAM_CAPTURE` 后只做两件事：把 `PIN_CAM_TRIG` **拉低** `CAM_TRIG_PULSE_MS`（OpenMV P6 是**下降沿**触发，空闲为高），然后等待摄像头把识别结果**发回来**。
 
 接收链路：`Serial2`（`PIN_CAM_RX`，摄像头 TX → 子板 RX）由主循环 `sub_camera_service()` 在等待窗口内**轮询**并按行解析（不用 onReceive 中断，避免摄像头未接时浮空引脚触发中断风暴）→ 发 `EVT_CARD_VALUE`。
 
-回传帧格式（**占位**，模组确定后只需改 `hardware.cpp` 顶部与解析函数）：
+回传格式（已确定，摄像头端**不用改代码**，直接用 OpenMV 原生 ASCII 文本行）：
 
 ```
-byte0   帧头   0x5A
-byte1   类型   0x01 = 识别结果
-byte2   长度 n data 字节数（n ≤ CARD_DATA_MAX）
-byte3.. 数据   识别载荷（约定：花色 1B + 点数 1B，其余待定）
-末尾    校验   从 byte1 到 data 末字节的累加和低 8 位
+RESULT:<结果>\r\n
+  spade_A / heart_10 / club_K / diamond_3   普通牌（花色_点数）
+  joker_big / joker_small                   大小王
+  back                                      只有牌背
+  UNKNOWN                                   置信度不足
+  ERROR                                     摄像头自身异常
 ```
 
-超时处理：触发后 `CAM_RESULT_TIMEOUT_MS` 内未收到合法回传 → `CAM_EMPTY_ON_TIMEOUT=1` 时发一帧**空** `EVT_CARD_VALUE`（保留“发空牌”调试路径，整条流程仍可跑通）；改为 0 则上报 `EVT_ERROR_CAM_FAIL`。
+子板把文本翻译成内部牌面编码（`code = 花色×13 + 点数`，花色顺序黑桃 0 / 红桃 1 / 梅花 2 / 方块 3，小王 52 / 大王 53 / 背面 54 / 未知 55），再按板间二进制帧发 `EVT_CARD_VALUE`（`data = [card, src]`）。帧格式与示例见 [camera_protocol.md](camera_protocol.md)。
+
+超时处理：触发后 `CAM_RESULT_TIMEOUT_MS`(1.2s) 内未收到合法回传 → `CAM_EMPTY_ON_TIMEOUT=1` 时发 `EVT_CARD_VALUE [CARD_UNKNOWN(55), CARD_SRC_TIMEOUT(1)]`（不是空帧；保留“发空牌”调试路径，整条流程仍可跑通）；改为 0 则上报 `EVT_ERROR_CAM_FAIL`。
+
+**反方向（子板 → 摄像头）**：用同一根 UART（`PIN_CAM_TX` → 摄像头 RX/P5）、同一套格式风格
+——ASCII 文本行 + `\r\n` 结尾。当前只有一条指令，用于开机自检的摄像头校准：
+
+```
+CALIBRATE\r\n          // 子板 sub_camera_calibrate() 发出，随后等 CAM_CALIB_WAIT_MS(1.5s) 收回应
+```
+
+- 指令内容在 `app_config.h` 的 `CAM_CMD_CALIBRATE` 一处定义，改字符串即可；
+- 摄像头端**目前不读 UART**（`重要信息/STANDALONE_IO_PROTOCOL(1).md` 第 7 节），需要加接收处理后才生效；
+  在那之前自检只打印 `[CAM] calibrate: no reply`，`SUB_ST_CAM_CALIB` 位留 0，**不算失败**；
+- 详细格式、回应约定、联调步骤见 [camera_protocol.md](camera_protocol.md) 第 7 节。
+- 注意：`PIN_CAM_TRIG`(GPIO20) 与 `PIN_CAM_TX`(GPIO10) 是两回事——下发指令**不需要**碰 TRIG，
+  所以自检里只初始化 UART，不动 GPIO20（它是原生 USB 的 D+，一动原生 USB 日志就没了）。
 
 ## 六、数据与内存设计
 
@@ -207,15 +232,27 @@ byte3.. 数据   识别载荷（约定：花色 1B + 点数 1B，其余待定）
 |----------|--------|----------|----------|
 | 光电门超时/卡牌 | 子板（1.5s 定时器 + 反转撤回重试） | 撤回成功自动重试；失败才发 `EVT_ERROR_CARD_JAM` | 停机等复位，屏幕显示错误 |
 | 发牌电机堵转 | 子板（电流检测/超时） | 立即发 `EVT_ERROR_MOTOR_STALL` | 停止或急停，进入错误状态 |
-| 摄像头识别失败 | 子板（2s 超时/识别置信度） | 该张标记“未知牌”，发 `EVT_CARD_VALUE` + 标志 | 记录异常，整局结束后向小程序报告 |
+| 摄像头识别失败 | 子板（`CAM_RESULT_TIMEOUT_MS` 1.2s 超时 / OpenMV 回 `RESULT:UNKNOWN`） | 标为未知牌：发 `EVT_CARD_VALUE [55, src]`（超时 `src=1`、低置信度 `src=2`）；若摄像头回 `RESULT:ERROR` 或 `CAM_EMPTY_ON_TIMEOUT=0`，改发 `EVT_ERROR_CAM_FAIL` | 记录异常，整局结束后向小程序报告 |
 | 串口掉线 | 子板/底板双方 | 本地超时处理 | 底板暂停发牌流程，等待链路恢复 |
 
 ## 八、启动与自检流程
 
 1. 硬件初始化：GPIO、PWM、串口、摄像头接口。
-2. 自检：光敏电平正常、电机驱动就绪、摄像头可初始化。
-3. 上报 `EVT_READY`（含自检结果）给底板。
+2. 开机自检 `busy_self_test()`，顺序固定（每一步都写进串口日志，结果写进 `SUB_ST_*` 位图）：
+
+   | 步骤 | 内容 | 判定 | 位 |
+   |------|------|------|----|
+   | ① | 读一次光电门电平 | 能读到即算这项可用（电平高低要对着现场看） | `SUB_ST_PHOTO` |
+   | ② | **发摄像头校准指令**并等回应（`CAM_CALIB_WAIT_MS` 1.5s） | 收到回应且非 `RESULT:ERROR` | `SUB_ST_CAM_CALIB` / `SUB_ST_CAM_UART` |
+   | ③ | 发牌电机微动（正转 150ms → 刹车 → 反转 300ms） | **人眼/听声确认**抖了两下 | `SUB_ST_MOTOR` |
+   | ④ | 再读一次光电门（对比 ①，看牌有没有被推动） | 可观察项 | — |
+   | ⑤ | 查与底板串口：自检期间是否收到过底板数据 | 收到即置位（底板还没启动时可 0） | `SUB_ST_HOST_UART` |
+
+3. 上报 `EVT_READY`（`data` = 2 字节结果位图）给底板。
 4. 进入 IDLE，等待底板命令。
+
+> 自检里**不做**需要人配合的项（转编码器、按编码器、手转电机试锁轴力矩、拿磁铁试霍尔）——
+> 这些留给以后的交互式复检模式。底板侧可用 `CMD_SELF_TEST` 让子板重跑上述自检并重新上报 `EVT_READY`。
 
 ## 九、主循环伪代码框架
 
@@ -274,8 +311,8 @@ void loop() {
 
 ### 落地前需确认
 
-1. **子板主控选型**（决定引脚映射、摄像头接口、电机驱动 IO）。
-2. **摄像头模组**：视觉模组（如 OpenMV，自带识别，串口/SPI 回传结果）或摄像头传感器 + 主控识别，两者对状态机 `CAM_CAPTURE` 阶段实现不同。
-3. **发牌电机驱动**：是否有电流检测/堵转报警脚。
-4. **协议帧格式定稿**：与底板 `architecture_v2.md` 第七章对齐后冻结。
-5. **光敏传感器安装与触发电平**：确认有效沿与消抖参数。
+1. ~~**子板主控选型**~~ → 已定：ESP32-S3-WROOM-1-N16R8（引脚映射见 `SubBoard/include/pins_config.h`）。
+2. ~~**摄像头模组**~~ → 已定：OpenMV H7 Plus，自带识别，UART 回传文本行（见 [camera_protocol.md](camera_protocol.md)）。
+3. ~~**协议帧格式定稿**~~ → 已定：与底板第七章对齐，见 [board_protocol.md](board_protocol.md)。
+4. ~~**光敏传感器安装与触发电平**~~ → 已定：改用光电门，**有牌 = 低电平（GND）**、无牌 = 高；采样为**电平轮询 + 去抖**（不是中断/边沿），参数见 `app_config.h` 的 `PHOTO_DEBOUNCE_MS` / `PHOTO_GONE_MS`。
+5. **发牌电机驱动**：TB6612 已实测可用；**堵转电流检测脚未接**，堵转只能靠“光电门超时 / 卡牌超时”间接判断。

@@ -48,12 +48,24 @@
 #define CAM_TRIG_PULSE_MS 200   // PIN_CAM_TRIG 触发脉冲宽度（ms，**低电平有效**；OpenMV 要求 ≥5ms）
 
 // ===== 摄像头回传（OpenMV 主动发回 ASCII 文本行，子板只接收解析）=====
-// 硬件：摄像头 TX → 子板 PIN_CAM_RX；子板 PIN_CAM_TX 备用（不主动下发）
+// 硬件：摄像头 TX → 子板 PIN_CAM_RX；子板 PIN_CAM_TX → 摄像头 RX（只用于下发文本指令，见下）
 #define CAM_UART_BAUD 115200        // 与 OpenMV UART3 一致（115200 8N1）
 #define CAM_RESULT_TIMEOUT_MS 1200  // 触发后等待 "RESULT:..." 的最长时间（OpenMV 文档建议 1.2s）
 // 1 = 超时未收到结果时，按“未知牌 + 超时来源”上报（保留调试路径，整局能跑完）
 // 0 = 超时直接上报 EVT_ERROR_CAM_FAIL
 #define CAM_EMPTY_ON_TIMEOUT 1
+
+// ===== 子板 → 摄像头：文本指令（与回传同风格：ASCII + \r\n 结尾）=====
+// ⚠️ OpenMV 端 main_standalone.py 目前不读 UART（见 重要信息/STANDALONE_IO_PROTOCOL(1).md 第 7 节），
+//    摄像头端加一行接收处理后本指令才生效；在那之前自检只会打印“无回应”，不算失败。
+// 改指令内容只改这里（保持“纯 ASCII + \r\n 结尾”即可与 RESULT: 回传同风格）。
+#define CAM_CMD_CALIBRATE "CALIBRATE\r\n"
+
+// ===== 开机自检（子板）=====
+// 自检里的电机微动要明显短于正常出牌时间，避免真的把牌发出去。
+#define SELFTEST_MOTOR_FWD_MS 150   // 自检正转时长（正常出牌 MOTOR_FWD_MS=390）
+#define SELFTEST_MOTOR_REV_MS 300   // 自检反转时长（把可能被推出去的牌退回）
+#define CAM_CALIB_WAIT_MS     1500  // 发完校准指令后等摄像头回应的时长（也是“先校准、后转电机”的间隔）
 
 // ===== 串口（与底板通信）=====
 #define SUB_UART_BAUD 115200

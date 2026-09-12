@@ -45,6 +45,41 @@ void display_init(void) {
     tft.fillScreen(TFT_BLACK);
 }
 
+// 上电自检汇总屏：在 setup() 里由 self_test() 调用（此时显示任务还没启动，直接画）。
+// 显示 SELFTEST_SHOW_MS 后，显示任务收到 IDLE 命令会把它覆盖掉。
+// 位图含义见 hardware.h 的 BOT_ST_*（* = 需人眼/听声确认）。
+void display_show_selftest(uint16_t bits) {
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextSize(1);
+
+    bool link = (bits & BOT_ST_SUBUART) != 0;
+    bool chas = (bits & BOT_ST_CHASSIS) != 0;
+
+    tft.setTextColor(link ? TFT_GREEN : TFT_RED, TFT_BLACK);
+    tft.setCursor(4, 2);
+    tft.print("== SELF TEST ==");
+
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    int y = 18;
+    tft.setCursor(4, y); y += 11;
+    tft.printf("TFT     : %s", (bits & BOT_ST_TFT) ? "drawn *" : "SKIP");
+    tft.setCursor(4, y); y += 11;
+    tft.printf("CHASSIS : %s", chas ? "twitch *" : "FAIL");
+    tft.setCursor(4, y); y += 11;
+    tft.printf("HALL    : %s", (bits & BOT_ST_HALL) ? "read" : "SKIP");
+    tft.setCursor(4, y); y += 11;
+    tft.printf("ENC     : %s", (bits & BOT_ST_ENC) ? "read" : "SKIP");
+    tft.setCursor(4, y); y += 11;
+    tft.printf("BLE     : %s", (bits & BOT_ST_BLE) ? "on" : "SKIP");
+    tft.setCursor(4, y); y += 11;
+    tft.setTextColor(link ? TFT_WHITE : TFT_RED, TFT_BLACK);
+    tft.printf("SUB UART: %s", link ? "OK" : "NO LINK");
+
+    tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+    tft.setCursor(4, 112);
+    tft.print("* = check by eye/ear");
+}
+
 static uint8_t s_drawn = 0;   // 当前屏幕上高亮的行
 static uint8_t s_menu_offset = 0;   // 菜单当前显示的首个方案索引（列表可滚动）
 #define MENU_ROWS 4                 // 横屏一屏显示 4 个方案

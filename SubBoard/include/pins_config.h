@@ -19,7 +19,7 @@
 // 电平：有牌 = 低电平(GND)，无牌 = 高。主循环轮询 + 去抖（不用中断），见 hardware.cpp
 #define PIN_PHOTO            3
 
-// ---- 摄像头 / 视觉模组（接口待定：SPI / I2C / UART）----
+// ---- 摄像头 / 视觉模组（已定：OpenMV H7 Plus，UART 文本行回传）----
 #define PIN_CAM_TX           10  // 子板 → 摄像头 TX
 #define PIN_CAM_RX           46  // 摄像头 → 子板 RX（只接收）
 // ⚠️ CAM_TRIG = GPIO20：ESP32-S3 的 GPIO19/20 是原生 USB 的 D-/D+。

@@ -14,6 +14,9 @@
 #include "app_config.h"
 #include "itc.h"
 #include "hardware.h"
+#include "protocol.h"
+#include "display.h"
+#include "ble_comms.h"
 
 // ---- 底盘步进（AccelStepper，参考 重要信息/步进电机/main.cpp）----
 static AccelStepper g_chassis(AccelStepper::DRIVER, PIN_TMC_STEP, PIN_TMC_DIR);
@@ -180,11 +183,183 @@ bool chassis_rotate_turns(int32_t turns) {
     return chassis_run_relative(steps);
 }
 
+// ================= 外设自检（架构 v2 第一章 / 第八章；方案见 重要信息/自检流程方案.md）=================
+// 只做**不需要人配合**的项目，分两类：
+//   自动判定：引脚电平读回、BLE 广播、与子板串口握手（发 CMD_STATUS_QUERY 等应答）；
+//   人眼/听声确认：屏幕色块、底盘微动 —— 这类没有数字反馈，只能看/听（位图置 1 = 动作已执行）。
+// 交互项（转/按编码器、手转电机试锁轴力矩、拿磁铁试霍尔）不在开机自检里做。
+static uint16_t s_selftestBits = 0;      // 最近一次自检结果位图（BOT_ST_*）
+
+// 自检各分项（实现见本函数下方）
+static bool selftest_chassis(void);
+static bool selftest_sub_link(uint16_t *outBits);
+
 void self_test(void) {
-    // 外设自检：霍尔电平、编码器采样、SD 卡挂载、电机驱动（EN/STEP）、滑环串口回环。
-    // 任一失败 → 屏幕显示错误码，等待处理。
-    // TODO: 实现各外设检测函数。
-    Serial.println("[SELFTEST] TODO: 霍尔/编码器/SD/电机驱动/滑环自检");
+    s_selftestBits = 0;
+    Serial.println("[ST] ======== self test ========");
+
+    // 1) 屏幕：display_init() 已画过 红→绿→蓝→黑 色块（人眼确认颜色与顺序）
+    Serial.println("[ST] tft      : color bars drawn -> 人眼确认 红/绿/蓝/黑 顺序正确");
+    s_selftestBits |= BOT_ST_TFT;
+
+    // 2) 编码器引脚：读一次空闲电平（自动项；旋转/按键本身要人配合，不在开机自检里做）
+    int ea = digitalRead(PIN_ENC_A), eb = digitalRead(PIN_ENC_B), esw = digitalRead(PIN_ENC_SW);
+    Serial.printf("[ST] encoder  : A=%d B=%d SW=%d（空闲应全为 1；SW=0 说明按键被按住或短路）\n",
+                  ea, eb, esw);
+    s_selftestBits |= BOT_ST_ENC;
+
+    // 3) 霍尔：单次读数只能说明引脚可读，判定极性要拿磁铁靠近（人工项）
+    int hall = digitalRead(PIN_HALL);
+    Serial.printf("[ST] hall     : %d (%s) —— 未进磁场时应为 1；极性需磁铁靠近再看\n",
+                  hall, hall ? "HIGH" : "LOW");
+    s_selftestBits |= BOT_ST_HALL;
+
+    // 4) 蓝牙：ble_init() 已在 setup 里执行（广播已开），手机搜到即算通过
+    Serial.printf("[ST] ble      : advertising as '%s'%s\n",
+                  BLE_DEVICE_NAME, ble_connected() ? " (connected)" : "");
+    s_selftestBits |= BOT_ST_BLE;
+
+    // 5) SD 卡：未接线 → 跳过（不算失败）
+    Serial.println("[ST] sd       : skipped（未接线）");
+
+    // 6) 底盘步进微动（可观察项；净位移 0，不动转盘零点）
+    if (selftest_chassis()) s_selftestBits |= BOT_ST_CHASSIS;
+    else Serial.println("[ST] chassis  : twitch FAILED（查驱动供电 / EN / STEP 接线）");
+
+    // 7) 与子板串口握手（自动判定）
+    uint16_t subBits = 0;
+    if (selftest_sub_link(&subBits)) s_selftestBits |= BOT_ST_SUBUART;
+
+    s_selftestBits |= BOT_ST_DONE;
+    Serial.printf("[ST] ======== done: bits=0x%04X ========\n", (unsigned)s_selftestBits);
+    selftest_report();
+
+    // 8) 屏幕汇总：显示 SELFTEST_SHOW_MS 后，由显示任务覆盖成 IDLE 屏
+    display_show_selftest(s_selftestBits);
+    delay(SELFTEST_SHOW_MS);
+}
+
+// ================= 自检辅助与结果输出（实现细节见文件头注释）=================
+uint16_t selftest_bits(void) { return s_selftestBits; }
+
+// 自检结果汇总打印；CLI `selftest` 也走这里（不动作、不阻塞）
+void selftest_report(void) {
+    uint16_t b = s_selftestBits;
+    Serial.printf("[ST] ==== selftest bits=0x%04X ====\n", (unsigned)b);
+    Serial.printf("[ST]   tft      : %s\n", (b & BOT_ST_TFT)     ? "drawn *" : "SKIP");
+    Serial.printf("[ST]   chassis  : %s\n", (b & BOT_ST_CHASSIS) ? "twitch *" : "FAIL");
+    Serial.printf("[ST]   hall     : %s\n", (b & BOT_ST_HALL)    ? "read" : "SKIP");
+    Serial.printf("[ST]   encoder  : %s\n", (b & BOT_ST_ENC)     ? "read" : "SKIP");
+    Serial.printf("[ST]   ble      : %s\n", (b & BOT_ST_BLE)     ? "on" : "SKIP");
+    Serial.printf("[ST]   sub uart : %s\n", (b & BOT_ST_SUBUART) ? "OK" : "NO LINK");
+    Serial.printf("[ST]   sd       : %s\n", (b & BOT_ST_SD)      ? "ok" : "skipped (未接线)");
+    Serial.printf("[ST]   done     : %s\n", (b & BOT_ST_DONE)    ? "yes" : "no");
+    Serial.println("[ST]   (* = 需人眼/听声确认)");
+
+    // 现在就能读的实时状态（复检时不动作、不阻塞）
+    Serial.printf("[ST] live: hall=%d enc A/B/SW=%d/%d/%d ble=%s sub=%s\n",
+                  digitalRead(PIN_HALL),
+                  digitalRead(PIN_ENC_A), digitalRead(PIN_ENC_B), digitalRead(PIN_ENC_SW),
+                  ble_connected() ? "connected" : "advertising",
+                  sub_comm_online() ? "ONLINE" : "OFFLINE");
+    Serial.println("[ST] 交互项（转/按编码器、手转电机试锁轴力矩、拿磁铁试霍尔）需人工配合，未纳入开机自检");
+}
+
+// 底盘微动：顶层 ±SELFTEST_CHASSIS_DEG 度各一次，净位移 0。
+// 净位移 0 的意义：既能让电机/驱动真的动一下（可观察），又不会把转盘挪走——
+// hall_homing() 目前就是"以开机位置为零点"，转盘不能动。
+static bool selftest_chassis(void) {
+#if SELFTEST_CHASSIS_MOVE
+    long steps = (long)((double)SELFTEST_CHASSIS_DEG * (double)CHASSIS_STEPS_PER_REV *
+                        (double)CHASSIS_GEAR_NUM /
+                        (360.0 * (double)CHASSIS_GEAR_DEN) + 0.5);
+    if (steps < 1) steps = 1;
+    Serial.printf("[ST] chassis: twitch +/- %.1f top-deg (%ld motor steps each way)\n",
+                  (double)SELFTEST_CHASSIS_DEG, steps);
+    chassis_enable_driver();
+    // 去程 + 回程都到位才算通过（走不动说明驱动供电 / 接线 / EN 有问题）
+    return chassis_run_relative(steps) && chassis_run_relative(-steps);
+#else
+    Serial.println("[ST] chassis: skipped (SELFTEST_CHASSIS_MOVE=0)");
+    return true;
+#endif
+}
+
+// ---- 与子板串口握手（自检用）----
+// 此时子板通信任务还没创建，不能走 xSubboardTxQueue：直接写串口 + 轮询收帧。
+static proto_rx_t       s_stRx;
+static volatile bool    s_stGotFrame = false;
+static volatile bool    s_stGotReady = false;
+static volatile uint8_t s_stReadyBits[2] = { 0, 0 };
+
+static void selftest_rx_cb(const proto_frame_t *f) {
+    s_stGotFrame = true;
+    if (f->type == EVT_READY) {
+        s_stGotReady = true;
+        if (f->len >= 2) { s_stReadyBits[0] = f->data[0]; s_stReadyBits[1] = f->data[1]; }
+    }
+    proto_note_sub_rx();   // 收到即视为“在线”，让 sub_comm_online() 立刻生效
+}
+
+// 打印子板自检位图（SUB_ST_*，定义见 protocol.h）
+static void selftest_print_sub_bits(uint16_t b) {
+    Serial.printf("[ST]   sub bits=0x%04X |%s%s%s%s%s%s\n", (unsigned)b,
+                  (b & SUB_ST_MOTOR)     ? " motor"     : "",
+                  (b & SUB_ST_CAM_CALIB) ? " cam-calib" : "",
+                  (b & SUB_ST_CAM_UART)  ? " cam-uart"  : "",
+                  (b & SUB_ST_PHOTO)     ? " photo"     : "",
+                  (b & SUB_ST_HOST_UART) ? " host-uart" : "",
+                  (b & SUB_ST_DONE)      ? " done"      : "");
+    if (b & SUB_ST_CAM_CALIB) Serial.println("[ST]   ^ 摄像头已回应校准指令（校准已开始）");
+    else                      Serial.println("[ST]   ^ 摄像头未回应校准（OpenMV 端可能还没实现 UART 命令接收）");
+}
+
+// 与子板握手：发 CMD_STATUS_QUERY，等子板回帧（优先等带位图的 EVT_READY）。
+// 返回 true = 收到了至少一帧（链路通）。
+static bool selftest_sub_link(uint16_t *outBits) {
+    proto_rx_init(&s_stRx, selftest_rx_cb);
+    s_stGotFrame = false;
+    s_stGotReady = false;
+    s_stReadyBits[0] = s_stReadyBits[1] = 0;
+
+    while (Serial1.available() > 0) (void)Serial1.read();   // 丢掉开机瞬间的残留
+
+    proto_frame_t ping = {};
+    ping.type = CMD_STATUS_QUERY;
+    ping.len = 0;
+    proto_write_frame(&ping);
+
+    uint32_t t0 = millis();
+    uint32_t lastPing = t0;
+    uint32_t firstFrameMs = 0;
+    while ((uint32_t)(millis() - t0) < (uint32_t)SELFTEST_SUB_WAIT_MS) {
+        while (Serial1.available() > 0) proto_rx_feed(&s_stRx, (uint8_t)Serial1.read());
+
+        if (s_stGotReady) break;                     // 拿到 EVT_READY：最好情况，直接收工
+        if (s_stGotFrame && firstFrameMs == 0) firstFrameMs = millis();
+        // 链路已通（收到 ACK/STATUS）：再等一小会儿看有没有 EVT_READY 就收工
+        if (firstFrameMs && (uint32_t)(millis() - firstFrameMs) >=
+                                (uint32_t)SELFTEST_SUB_READY_GRACE_MS) break;
+
+        if ((uint32_t)(millis() - lastPing) >= (uint32_t)SELFTEST_SUB_PING_MS) {
+            lastPing = millis();
+            proto_write_frame(&ping);                // 子板可能刚启动，重发
+        }
+        delay(5);
+    }
+
+    uint16_t bits = (uint16_t)(s_stReadyBits[0] | ((uint16_t)s_stReadyBits[1] << 8));
+    if (outBits) *outBits = bits;
+
+    if (!s_stGotFrame) {
+        Serial.printf("[ST] sub link  : FAIL - %u ms 内没收到任何帧（查共地 / 接线 / 子板供电）\n",
+                      (unsigned)SELFTEST_SUB_WAIT_MS);
+        return false;
+    }
+    Serial.printf("[ST] sub link  : OK (%u ms)%s\n", (unsigned)(millis() - t0),
+                  s_stGotReady ? ", EVT_READY received" : ", no EVT_READY (可能已错过)");
+    if (s_stGotReady) selftest_print_sub_bits(bits);
+    return true;
 }
 
 // ================= 任务内占位函数（TODO：按架构实现）=================

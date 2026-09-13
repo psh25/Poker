@@ -37,6 +37,16 @@ v1.9（2026-09-12）修订（**摄像头调试可观测性**）：
 ② 新增子板本地调试命令 **`camcalib`**：向摄像头发一次 `CALIBRATE\r\n` 并等 `CAM_CALIB_WAIT_MS` 回应，
    用于摄像头端联调时随时验证"UART 命令接收"是否已实现，不必重启跑一遍开机自检。
 
+v1.10（2026-09-13）修订（**光电门改为"动作期间只记录、动作结束后统一判定"**）：
+① 单张牌的动作序列改成**固定时长**（不再"等牌离开光门"才换相）：
+   `MOTOR_ON`(正转 `MOTOR_FWD_MS`) → `BRAKE` → `REVERSE` → `PAUSE` → 判定 → `SEND_BACK`。
+   两种模式（`USE_PHOTO_SENSOR=0/1`）共用同一条流程，区别只在"要不要做判定"。
+② 光电门退化成**记录器**：动作期间只采样记录"是否出现过有牌"，不做任何判断；
+   动作结束、电机停稳（`PAUSE` 末尾）后再看"记录 + 当前电平"判定三种结果（见 3.4）：
+   **成功发出 / 卡在出牌口 / 根本没出去**。失败的两种都走原有自救路径（反转撤回 → 重试 → 报 `EVT_ERROR_CARD_JAM`）。
+③ 相应地：删除状态 `WAIT_CARD` / `WAIT_GONE`，删除 `PHOTO_TIMEOUT_MS` / `PHOTO_JAM_MS` / `MOTOR_STARTUP_MS`；
+   `EVT_CARD_OUT` 的发出时机由"牌离开光门的那一刻"改为"整张动作确认成功后"。
+
 ## 一、职责定位
 
 子板是**“带反馈的执行器”**，不是决策者：
@@ -80,11 +90,11 @@ v1.9（2026-09-12）修订（**摄像头调试可观测性**）：
 | 状态 | 含义 | 可执行操作 |
 |------|------|------------|
 | IDLE | 空闲，等待底板命令 | 解析串口命令、查询状态、自检 |
-| MOTOR_ON | 发牌电机启动中 | 启动电机正转；光电门模式下等 `MOTOR_STARTUP_MS` 后转 `WAIT_CARD` |
-| BRAKE | 正转→反转过渡 | 短刹车 `MOTOR_BRAKE_MS`（AIN1=AIN2=高，PWM=0；定时模式） |
-| WAIT_CARD | 光电门模式：等“有牌” | 轮询去抖后的电平；`PHOTO_TIMEOUT_MS` 仍未见牌 → 判卡 |
-| WAIT_GONE | 光电门模式：等“无牌”确认牌通过 | “无牌”稳定 `PHOTO_GONE_MS` → 上报 `EVT_CARD_OUT`；“有牌”持续 `PHOTO_JAM_MS` → 判卡 |
-| RETRACT | 卡牌：反转撤回 | 反转 `PHOTO_RETRACT_MS` 把牌退回 |
+| MOTOR_ON | 正转出牌中 | 正转 `MOTOR_FWD_MS`；**期间只记录光电门**，不做任何判断 |
+| BRAKE | 正转→反转过渡 | 短刹车 `MOTOR_BRAKE_MS`（AIN1=AIN2=高，PWM=0）；继续记录光电门 |
+| REVERSE | 出牌后反转回退 | 反转 `MOTOR_REV_MS`（把下一张退到摄像头可拍位置）；继续记录光电门 |
+| PAUSE | 动作收尾停顿 + 判定窗口 | 停电机、等 `MOTOR_PAUSE_MS`；**结束时判定这一张**（见 3.4） |
+| RETRACT | 判失败（卡住/没出去）：反转撤回 | 反转 `PHOTO_RETRACT_MS` 把牌退回 |
 | RETRACT_WAIT | 撤回后等门清空 | 门恢复“无牌” → 自动重试这一张；`PHOTO_CLEAR_MS` 内仍“有牌” → ERROR |
 | ~~CAM_CAPTURE~~ | **不占状态机状态** | 截图触发 + 回传解析在 `hardware.cpp` 的“截图会话”里独立完成（见 5.7），状态机只管电机/光电门流程 |
 | SEND_BACK | 打包回传底板 | 组装事件帧发送，完成后回到 IDLE |
@@ -96,38 +106,42 @@ v1.9（2026-09-12）修订（**摄像头调试可观测性**）：
 stateDiagram-v2
     [*] --> IDLE : 上电自检完成
     IDLE --> MOTOR_ON : 收到 CMD_DEAL_START
-    MOTOR_ON --> WAIT_CARD : 电机启动完成
-    WAIT_CARD --> WAIT_GONE : 检测到“有牌”
-    WAIT_CARD --> RETRACT : PHOTO_TIMEOUT_MS 未见牌（漏发/卡在里面）
-    WAIT_GONE --> BRAKE : “无牌”稳定 PHOTO_GONE_MS（牌完整通过）
-    WAIT_GONE --> RETRACT : “有牌”持续 PHOTO_JAM_MS（卡在出牌口）
+    MOTOR_ON --> BRAKE : 正转 MOTOR_FWD_MS 结束（MOTOR_BRAKE_MS>0）
+    MOTOR_ON --> REVERSE : 正转结束且 MOTOR_BRAKE_MS=0
+    MOTOR_ON --> PAUSE : 正转结束且刹车/反转都为 0
+    BRAKE --> REVERSE : 刹车结束且 MOTOR_REV_MS>0
+    BRAKE --> PAUSE : 刹车结束且 MOTOR_REV_MS=0
+    REVERSE --> PAUSE : 反转 MOTOR_REV_MS 结束（停电机）
+    PAUSE --> SEND_BACK : 判定=成功发出（上报 EVT_CARD_OUT）
+    PAUSE --> RETRACT : 判定=卡在出牌口 / 根本没出去
     RETRACT --> RETRACT_WAIT : 反转撤回结束
     RETRACT_WAIT --> MOTOR_ON : 门已清空 → 自动重试这一张
-    RETRACT_WAIT --> ERROR : 门仍被占（撤回失败）
+    RETRACT_WAIT --> ERROR : 门仍被占（撤回失败）/ 重试超限
     %% 截图会话（CAM_CAPTURE）不占状态机状态：触发与回传解析由 hardware.cpp 独立处理，见 5.7
-    BRAKE --> SEND_BACK : 出牌结束（定时模式经 REVERSE/PAUSE）
     SEND_BACK --> IDLE : EVT_DEAL_DONE 发送完成
     IDLE --> ERROR : 自检失败（上电或底板触发）
     ERROR --> IDLE : 收到底板复位/重试指令
     MOTOR_ON --> ERROR : 堵转电流检测（如有）
 ```
 
-> 定时模式（`USE_PHOTO_SENSOR=0`）在 `MOTOR_ON` 之后插入刹车与回退：
-> `MOTOR_ON → BRAKE → REVERSE → PAUSE → SEND_BACK`，其中 `MOTOR_BRAKE_MS=0` 时跳过 BRAKE。
+> 单张动作序列对两种模式都一样：`MOTOR_ON → BRAKE → REVERSE → PAUSE`，
+> 其中 `MOTOR_BRAKE_MS=0` 跳过 BRAKE、`MOTOR_REV_MS=0` 跳过 REVERSE。
+> `USE_PHOTO_SENSOR=0`（没有光电门）时 `PAUSE` 里直接按"成功发出"处理，不做判定。
 
 ### 3.3 转移条件与动作表
 
 | 转移 | 触发条件 | 动作 |
 |------|----------|------|
 | IDLE → MOTOR_ON | 收到 `CMD_DEAL_START` | 启动发牌电机正转 |
-| MOTOR_ON → WAIT_CARD | 光电门模式，电机启动 `MOTOR_STARTUP_MS` 后 | 等待“有牌” |
-| MOTOR_ON → BRAKE | 定时模式正转结束 | 上报 `EVT_CARD_OUT`；短刹车 `MOTOR_BRAKE_MS` |
-| BRAKE → REVERSE | 刹车结束且 `MOTOR_REV_MS>0` | 启动反转回退 |
-| BRAKE → PAUSE | 刹车结束且 `MOTOR_REV_MS=0` | 停止电机，进入停顿 |
-| WAIT_CARD → WAIT_GONE | 去抖后检测到“有牌” | 继续等牌离开 |
-| WAIT_CARD → RETRACT | `PHOTO_TIMEOUT_MS` 内一直“无牌” | 判为漏发/卡住 → 反转撤回 |
-| WAIT_GONE → BRAKE | “无牌”稳定 `PHOTO_GONE_MS` | 牌完整通过：停电机、上报 `EVT_CARD_OUT`、短刹车 |
-| WAIT_GONE → RETRACT | “有牌”持续 `PHOTO_JAM_MS` | 判为卡在出牌口 → 反转撤回 |
+| IDLE → MOTOR_ON | 收到 `CMD_DEAL_START` | 启动正转出牌；**清空光电门记录**开始记录 |
+| MOTOR_ON → BRAKE | 正转 `MOTOR_FWD_MS` 结束且 `MOTOR_BRAKE_MS>0` | 短刹车（缓解换向电流冲击） |
+| MOTOR_ON → REVERSE | 正转结束、`MOTOR_BRAKE_MS=0` 且 `MOTOR_REV_MS>0` | 启动反转回退 |
+| MOTOR_ON → PAUSE | 正转结束、刹车与反转都为 0 | 停电机，进入判定 |
+| BRAKE → REVERSE | 刹车 `MOTOR_BRAKE_MS` 结束且 `MOTOR_REV_MS>0` | 启动反转回退 |
+| BRAKE → PAUSE | 刹车结束且 `MOTOR_REV_MS=0` | 停电机，进入判定 |
+| REVERSE → PAUSE | 反转 `MOTOR_REV_MS` 结束 | 停电机，进入判定前的稳定窗口 |
+| PAUSE → SEND_BACK | 停顿 `MOTOR_PAUSE_MS` 结束，判定 = **成功发出** | 上报 `EVT_CARD_OUT` |
+| PAUSE → RETRACT | 判定 = **卡在出牌口** 或 **根本没出去** | 先停正转，再反转撤回 |
 | RETRACT → RETRACT_WAIT | 反转 `PHOTO_RETRACT_MS` 结束 | 停电机，等门恢复“无牌” |
 | RETRACT_WAIT → MOTOR_ON | 门恢复“无牌”且在重试次数内 | 自动重试这一张（≤ `PHOTO_JAM_RETRY_MAX`） |
 | RETRACT_WAIT → ERROR | `PHOTO_CLEAR_MS` 内仍“有牌”，或重试超限 | 停止电机；上报 `EVT_ERROR_CARD_JAM` |
@@ -135,13 +149,37 @@ stateDiagram-v2
 | SEND_BACK → IDLE | 事件帧发送完成 | 发送 `EVT_DEAL_DONE`，回到待命（牌面已由摄像头路径直接上报，没有单卡缓冲需要清） |
 | ERROR → IDLE | 收到底板复位/重试指令 | 复位状态机，重新待命 |
 
+### 3.4 光电门记录与发牌结果判定（v1.10）
+
+动作期间（`MOTOR_ON`/`BRAKE`/`REVERSE`）**只记录、不判断**：每个主循环 tick 采样一次去抖后的电平，
+只要出现过"有牌"就置位 `seenPresent`。
+
+动作结束、电机停稳后（`PAUSE` 末尾）用"记录 + 当前电平"判定三种结果：
+
+| 动作中见过"有牌" | 结束时的电平 | 判定 | 应对 |
+|---|---|---|---|
+| 否 | 无牌 | **根本没出去**（漏发 / 卡在牌源里） | 反转撤回 → 重试 → 仍失败则报 `EVT_ERROR_CARD_JAM` |
+| 是 | 有牌 | **卡在出牌口** | 反转撤回 → 重试 → 仍失败则报 `EVT_ERROR_CARD_JAM` |
+| 是 | 无牌 | **成功发出** | 上报 `EVT_CARD_OUT`，继续下一张 |
+
+设计说明：
+
+- `PAUSE` 的 `MOTOR_PAUSE_MS`(100ms) 兼作**判定前的稳定窗口**：电机已停、牌堆复位，
+  避免"下一张牌微微露头又缩回"这类瞬态被误判成卡住；电平本身已由 `PHOTO_DEBOUNCE_MS`(20ms) 去抖。
+- 两种失败**走同一条自救路径**（反转撤回 → 等门清空 → 重试 ≤ `PHOTO_JAM_RETRY_MAX` 次 → 报错），
+  与既有方案一致；等门清空用 `PHOTO_GONE_MS`，整段上限 `PHOTO_CLEAR_MS`。
+- 判定挪到动作之后，`EVT_CARD_OUT` 的发出时机从"牌离开光门的那一刻"变成"整张动作确认成功后"；
+  对底板语义不变（仍是"这一张成功发出"），`EVT_CARD_OUT` → `EVT_DEAL_DONE` 的顺序也不变。
+- ⚠️ 正转时长 `MOTOR_FWD_MS`(390ms) 现在是**唯一的推进时长**，必须保证能把一张牌完整推过出牌口并留余量；
+  太短会把"还在路上"的牌误判成卡住（随后被反转拉回来）。实机需按出牌速度重新确认这个值。
+
 ## 四、中断与定时器设计
 
 | 中断/定时器 | 用途 | 说明 |
 |-------------|------|------|
 | 串口 RX 中断 | 接收底板命令 | 中断内只写入环形缓冲区，主循环解析，避免丢帧 |
-| 光电门轮询（不用中断） | 检测牌是否在出牌口 | 主循环 `sub_photo_update()` 采样 + `PHOTO_DEBOUNCE_MS` 去抖；有牌=低电平 |
-| 软件超时定时器 | 等牌 / 卡牌 / 撤回超时 | `PHOTO_TIMEOUT_MS`（未见牌）、`PHOTO_JAM_MS`（卡在门口）、`PHOTO_CLEAR_MS`（撤回后未清空） |
+| 光电门轮询（不用中断） | 检测牌是否在出牌口 | 主循环 `sub_photo_update()` 采样 + `PHOTO_DEBOUNCE_MS` 去抖；有牌=低电平。v1.10 起**动作期间只记录**，判定放到动作结束后（见 3.4） |
+| 软件超时定时器 | 动作各阶段 / 撤回 / 判定 | 靠 `millis()` 推进 `MOTOR_FWD_MS` / `MOTOR_BRAKE_MS` / `MOTOR_REV_MS` / `MOTOR_PAUSE_MS`；`PHOTO_RETRACT_MS` 撤回、`PHOTO_CLEAR_MS` 撤回后仍未清空 |
 | 串口 TX | 事件上报 | 逐张实时上报，不缓存整副牌 |
 | 摄像头 TRIG 输出 | 截图触发 | 收到 `CMD_CAM_CAPTURE` 后把 `PIN_CAM_TRIG` **拉低** `CAM_TRIG_PULSE_MS`（OpenMV P6 下降沿触发），再恢复高 |
 | 电流检测（如有） | 发牌电机堵转 | 模拟输入或驱动芯片报警脚，异常立即上报 |
@@ -180,10 +218,10 @@ stateDiagram-v2
 | 事件 | 数据 | 说明 |
 |------|------|------|
 | `EVT_READY` | `[bitsLo, bitsHi]`（2 字节位图 `SUB_ST_*`） | 自检完成：开机自检与 `CMD_SELF_TEST` 复检都会发（位定义见 [board_protocol.md](board_protocol.md) 4.2） |
-| `EVT_CARD_OUT` | 无（空载荷） | 光电门确认一张牌完整通过 |
+| `EVT_CARD_OUT` | 无（空载荷） | 这一张**确认成功发出**（动作跑完、电机停稳后按光电门记录判定，见 3.4） |
 | `EVT_CARD_VALUE` | `[card, src]` | 牌面识别结果：`card` = 牌面编码 0~55、`src` = 来源（见 [board_protocol.md](board_protocol.md) 4.1） |
 | `EVT_DEAL_DONE` | 无（空载荷） | 单张发牌流程完成 |
-| `EVT_ERROR_CARD_JAM` | 无（空载荷） | 光电门超时/卡牌，**立即上报** |
+| `EVT_ERROR_CARD_JAM` | 无（空载荷） | 卡在出牌口 / 根本没出去，且撤回重试后仍失败，**立即上报** |
 | `EVT_ERROR_MOTOR_STALL` | 无（空载荷） | 发牌电机堵转（**未实装**：TB6612 无电流检测脚） |
 | `EVT_ERROR_CAM_FAIL` | 无（空载荷） | 摄像头回 `RESULT:ERROR`，或超时且 `CAM_EMPTY_ON_TIMEOUT=0` |
 | `EVT_STATUS` | [state, error, countLo, countHi] | 状态回执：`CMD_STATUS_QUERY` 的应答（心跳） |
@@ -247,7 +285,7 @@ CALIBRATE\r\n          // 子板 sub_camera_calibrate() 发出，随后等 CAM_C
 
 | 检查类型 | 谁检测 | 上报时机 | 底板决策 |
 |----------|--------|----------|----------|
-| 光电门超时/卡牌 | 子板（1.5s 定时器 + 反转撤回重试） | 撤回成功自动重试；失败才发 `EVT_ERROR_CARD_JAM` | 停机等复位，屏幕显示错误 |
+| 卡牌 / 没出去 | 子板（动作结束后的光门判定，见 3.4；反转撤回 + 重试一次） | 自救无效才发 `EVT_ERROR_CARD_JAM` | 停机等复位，屏幕显示错误 |
 | 发牌电机堵转 | 子板（电流检测/超时） | 立即发 `EVT_ERROR_MOTOR_STALL` | 停止或急停，进入错误状态 |
 | 摄像头识别失败 | 子板（`CAM_RESULT_TIMEOUT_MS` 1.2s 超时 / OpenMV 回 `RESULT:UNKNOWN`） | 标为未知牌：发 `EVT_CARD_VALUE [55, src]`（超时 `src=1`、低置信度 `src=2`）；若摄像头回 `RESULT:ERROR` 或 `CAM_EMPTY_ON_TIMEOUT=0`，改发 `EVT_ERROR_CAM_FAIL` | 记录异常，整局结束后向小程序报告 |
 | 串口掉线 | 底板监控任务（心跳 `CMD_STATUS_QUERY` / `EVT_STATUS` + `COMM_DEAD_TIMEOUT_MS` 3s 阈值） | 掉线时串口打印 `[MON] sub board OFFLINE`，后续新局开局被拒 | **开局前**检查：不在线直接拒绝启动并报 `sub offline`；**运行中**掉线不做立即暂停，由各等待超时（牌面/出牌/单张完成）兜底 |
@@ -273,50 +311,76 @@ CALIBRATE\r\n          // 子板 sub_camera_calibrate() 发出，随后等 CAM_C
 
 ## 九、主循环伪代码框架
 
+> 实际实现见 `SubBoard/src/main.cpp`（主循环）与 `src/state_machine.cpp`（状态机）；
+> 下面是与当前代码一致的骨架（v1.10 起：动作期间光电门**只记录**，判定放到动作结束后）。
+
 ```cpp
-// 注：定时模式另有 BRAKE / REVERSE / PAUSE 状态，顺序为
-//     MOTOR_ON → BRAKE → REVERSE → PAUSE → SEND_BACK（见 3.1/3.3）。
-enum { STATE_IDLE, STATE_MOTOR_ON, STATE_WAIT_CARD,
-       STATE_CAM_CAPTURE, STATE_SEND_BACK, STATE_ERROR } state;
+// 单张动作：MOTOR_ON → BRAKE → REVERSE → PAUSE → 判定 → SEND_BACK
+// 失败：PAUSE → RETRACT → RETRACT_WAIT →（重试 MOTOR_ON / ERROR）
+enum { STATE_IDLE, STATE_MOTOR_ON, STATE_BRAKE, STATE_REVERSE, STATE_PAUSE,
+       STATE_RETRACT, STATE_RETRACT_WAIT, STATE_SEND_BACK, STATE_ERROR } state;
+
+bool seenPresent;                  // 动作期间是否出现过“有牌”（只记录）
+int  retry;                        // 本张牌已重试次数
 
 void loop() {
-    parse_uart_command();          // 串口环形缓冲解析，设置命令标志
+    parse_uart_command();          // 串口 RX 中断写环形缓冲 → 这里解析并分发
+    sub_camera_service();          // 摄像头回传解析（截图会话，不占状态机状态）
+    sub_photo_update();            // 光电门采样 + 去抖
+
     switch (state) {
     case STATE_IDLE:
-        if (cmd == CMD_DEAL_START) { start_motor(); state = STATE_MOTOR_ON; }
-        if (cmd == CMD_SELF_TEST)   { run_self_test(); }
+        if (cmd == CMD_DEAL_START) { retry = 0; seenPresent = false; start_motor(); state = STATE_MOTOR_ON; }
+        if (cmd == CMD_SELF_TEST)  { run_self_test(); }
         break;
-    case STATE_MOTOR_ON:
-        if (motor_started) { state = STATE_WAIT_CARD; arm_timeout(500); }
+
+    case STATE_MOTOR_ON:           // 正转：只记录，不判断
+        if (photo_present()) seenPresent = true;
+        if (elapsed() >= MOTOR_FWD_MS) { brake(); state = STATE_BRAKE; }
         break;
-    case STATE_WAIT_CARD:
-        if (photo_isr_flag) {
-            stop_motor();
-            send_event(EVT_CARD_OUT);
-            trigger_camera();
-            state = STATE_CAM_CAPTURE;
-        } else if (timeout_expired) {
-            stop_motor();
+
+    case STATE_BRAKE:
+        if (photo_present()) seenPresent = true;
+        if (elapsed() >= MOTOR_BRAKE_MS) { reverse(); state = STATE_REVERSE; }
+        break;
+
+    case STATE_REVERSE:
+        if (photo_present()) seenPresent = true;
+        if (elapsed() >= MOTOR_REV_MS) { stop_motor(); state = STATE_PAUSE; }
+        break;
+
+    case STATE_PAUSE:              // 电机已停稳 → 判定这一张（见 3.4）
+        if (elapsed() >= MOTOR_PAUSE_MS) {
+            // 没有光电门时（USE_PHOTO_SENSOR=0）直接按 OUT 处理
+            if (photo_present())   result = STUCK;    // 门口还压着牌
+            else if (!seenPresent) result = MISSED;   // 全程没见过牌
+            else                   result = OUT;      // 见过、现在没了
+            if (result == OUT) { send_event(EVT_CARD_OUT); state = STATE_SEND_BACK; }
+            else               { reverse(); state = STATE_RETRACT; }
+        }
+        break;
+
+    case STATE_RETRACT:            // 反转撤回
+        if (elapsed() >= PHOTO_RETRACT_MS) { stop_motor(); state = STATE_RETRACT_WAIT; }
+        break;
+
+    case STATE_RETRACT_WAIT:       // 等门清空 → 重试；超时/超次数 → ERROR
+        if (!photo_present() && stable_ms() >= PHOTO_GONE_MS) {
+            if (++retry <= PHOTO_JAM_RETRY_MAX) { seenPresent = false; start_motor(); state = STATE_MOTOR_ON; }
+            else                                { send_event(EVT_ERROR_CARD_JAM); state = STATE_ERROR; }
+        } else if (elapsed() >= PHOTO_CLEAR_MS) {
             send_event(EVT_ERROR_CARD_JAM);
             state = STATE_ERROR;
         }
         break;
-    case STATE_CAM_CAPTURE:
-        if (camera_ready) {
-            recognize_card();       // 成功或标记未知牌
-            state = STATE_SEND_BACK;
-        } else if (timeout_expired) {
-            mark_unknown_card();
-            state = STATE_SEND_BACK;
-        }
-        break;
+
     case STATE_SEND_BACK:
-        send_event(EVT_CARD_VALUE);
-        send_event(EVT_DEAL_DONE);
+        send_event(EVT_DEAL_DONE);     // 牌面 EVT_CARD_VALUE 由摄像头路径单独上报
         state = STATE_IDLE;
         break;
+
     case STATE_ERROR:
-        if (cmd == CMD_RESET || cmd == CMD_STOP) { reset_machine(); state = STATE_IDLE; }
+        if (cmd == CMD_RESET || cmd == CMD_STOP) { stop_motor(); state = STATE_IDLE; }
         break;
     }
 }
@@ -332,4 +396,4 @@ void loop() {
 2. ~~**摄像头模组**~~ → 已定：OpenMV H7 Plus，自带识别，UART 回传文本行（见 [camera_protocol.md](camera_protocol.md)）。
 3. ~~**协议帧格式定稿**~~ → 已定：与底板第七章对齐，见 [board_protocol.md](board_protocol.md)。
 4. ~~**光敏传感器安装与触发电平**~~ → 已定：改用光电门，**有牌 = 低电平（GND）**、无牌 = 高；采样为**电平轮询 + 去抖**（不是中断/边沿），参数见 `app_config.h` 的 `PHOTO_DEBOUNCE_MS` / `PHOTO_GONE_MS`。
-5. **发牌电机驱动**：TB6612 已实测可用；**堵转电流检测脚未接**，堵转只能靠“光电门超时 / 卡牌超时”间接判断。
+5. **发牌电机驱动**：TB6612 已实测可用；**堵转电流检测脚未接**，堵转只能靠"动作结束后的光电门判定 + 撤回重试"间接判断。

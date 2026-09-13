@@ -1,15 +1,20 @@
 /**
  * 子板裸机状态机（docs/subboard_architecture.md 第三章）
  *
- * 定时模式（USE_PHOTO_SENSOR=0，无光电门时的调试路径）：
- *   MOTOR_ON 正转 MOTOR_FWD_MS → BRAKE → REVERSE → PAUSE → SEND_BACK
+ * 单张牌的动作序列（两种模式统一，**固定时长**，不再由光电门决定何时换相）：
+ *   MOTOR_ON 正转 MOTOR_FWD_MS → BRAKE → REVERSE → PAUSE → 判定 → SEND_BACK
  *
- * 光电门模式（USE_PHOTO_SENSOR=1，生产路径）：
- *   MOTOR_ON 正转 → WAIT_CARD 等“有牌” → WAIT_GONE 等“无牌”确认牌完整通过
- *   → EVT_CARD_OUT → BRAKE → REVERSE → PAUSE → SEND_BACK
- *   卡牌保护：停留太久判为卡住 → RETRACT 反转撤回 → RETRACT_WAIT 等门恢复；
- *             恢复成功 → 自动重试这一张（最多 PHOTO_JAM_RETRY_MAX 次）
- *             撤回失败 / 重试超限 → ERROR（停机上报，等底板复位指令）
+ * 光电门在这里只当"记录器"（USE_PHOTO_SENSOR=1）：
+ *   动作期间（正转/刹车/反转）只采样记录"是否出现过有牌"，**不做任何判断**；
+ *   动作结束、电机停稳后（PAUSE 末尾）再根据"记录 + 当前电平"判定这一张：
+ *     成功发出   = 过程中出现过“有牌”，结束时已恢复“无牌”
+ *     卡在出牌口 = 结束时仍是“有牌”
+ *     根本没出去 = 整个过程都没出现过“有牌”（漏发 / 卡在牌源里）
+ *   失败 → RETRACT 反转撤回 → RETRACT_WAIT 等门恢复；
+ *          恢复成功 → 自动重试这一张（最多 PHOTO_JAM_RETRY_MAX 次）
+ *          撤回失败 / 重试超限 → ERROR（停机上报，等底板复位指令）
+ *
+ * USE_PHOTO_SENSOR=0（没有光电门时的调试路径）：跳过判定，一律按"成功发出"处理。
  *
  * 摄像头：由底板 CMD_CAM_CAPTURE 驱动，见 hardware.cpp 的 sub_camera_service()
  */
@@ -31,6 +36,41 @@ static uint32_t s_deal_count = 0;   // 出牌计数（调试日志用）
 // EVT_CARD_VALUE 上报（见 hardware.cpp），这里不再保留单卡缓冲。
 static uint8_t s_jam_count = 0;     // 本张牌已重试次数（撤回成功后重试，超出则报错）
 
+// ================= 光电门记录 + 发牌结果判定 =================
+// 动作期间只记录，不做任何判断；判定统一放到动作结束（电机停稳）之后。
+typedef enum {
+    CARD_RESULT_OUT = 0,   // 成功发出：过程中出现过“有牌”，结束时已“无牌”
+    CARD_RESULT_MISSED,    // 根本没出去：整个过程都没出现过“有牌”
+    CARD_RESULT_STUCK,     // 卡在出牌口：结束时仍是“有牌”
+} card_result_t;
+
+static bool s_pt_seen_present = false;   // 动作期间是否出现过“有牌”（去抖后）
+
+// 开始一张牌的动作：清空记录
+static void photo_trace_reset(void) {
+    s_pt_seen_present = false;
+}
+
+// 动作期间每次调用：只记录，不判断
+static void photo_trace_sample(void) {
+    if (sub_photo_present()) s_pt_seen_present = true;
+}
+
+// 动作结束（电机已停稳）后判定这一张
+static card_result_t photo_trace_eval(void) {
+    if (sub_photo_present()) return CARD_RESULT_STUCK;    // 门口还压着牌 → 卡住
+    if (!s_pt_seen_present)  return CARD_RESULT_MISSED;   // 全程没见过牌 → 没出去
+    return CARD_RESULT_OUT;                               // 见过、现在没了 → 成功
+}
+
+static const char *card_result_name(card_result_t r) {
+    switch (r) {
+    case CARD_RESULT_OUT:    return "OUT";
+    case CARD_RESULT_MISSED: return "MISSED (never reached gate)";
+    default:                 return "STUCK (card still at gate)";
+    }
+}
+
 // ---- 自动连续发牌（调试用）----
 static bool  s_auto_active  = false;
 static long  s_auto_left    = 0;     // >0 剩余张数；-1 无限
@@ -43,6 +83,7 @@ sub_state_t sub_state_get(void) {
 
 // 进入“正转出牌”（不检查当前状态，供卡牌重试等内部路径使用）
 static void deal_begin_forward(void) {
+    photo_trace_reset();              // 新一张牌：清空光电门记录
     busy_motor_start();               // 正转出牌
     g_state = SUB_STATE_MOTOR_ON;
     g_state_start_ms = millis();
@@ -130,9 +171,10 @@ void sub_mark_error(uint8_t errorType) {
     g_state = SUB_STATE_ERROR;
 }
 
-// 判为卡牌：先停正转，再反转把牌撤回（撤回是否成功在 SUB_STATE_RETRACT_WAIT 里判定）
-static void photo_enter_jam(const char *why) {
-    dbg_printf("[SUB] JAM: %s -> retract %dms\n", why, PHOTO_RETRACT_MS);
+// 判为失败（卡住 / 没出去）：先停正转，再反转把牌撤回
+// （撤回是否成功、要不要重试，在 SUB_STATE_RETRACT_WAIT 里判定）
+static void photo_enter_retract(card_result_t r) {
+    dbg_printf("[SUB] retract: %s -> reverse %dms\n", card_result_name(r), PHOTO_RETRACT_MS);
     busy_motor_stop();
     busy_motor_start_reverse();
     g_state = SUB_STATE_RETRACT;
@@ -168,31 +210,21 @@ void sub_state_run(void) {
         break;
 
     case SUB_STATE_MOTOR_ON:
-        // 主动维持正转驱动（GPIO 状态异常自愈）
+        // 正转出牌：主动维持驱动（GPIO 状态异常自愈）；期间只记录光电门，不做判断
         busy_motor_start();
-
-        if (!USE_PHOTO_SENSOR) {
-            // 定时出牌：正转 MOTOR_FWD_MS 后认为一张已出
-            if (now - g_state_start_ms >= MOTOR_FWD_MS) {
-                proto_send(EVT_CARD_OUT, NULL, 0);   // 实时上报：已出一张
-                if (MOTOR_BRAKE_MS > 0) {
-                    busy_motor_brake();               // 先短刹车，缓解换向冲击
-                    g_state = SUB_STATE_BRAKE;
-                } else if (MOTOR_REV_MS > 0) {
-                    busy_motor_start_reverse();
-                    g_state = SUB_STATE_REVERSE;
-                } else {
-                    busy_motor_stop();
-                    g_state = SUB_STATE_PAUSE;
-                }
-                g_state_start_ms = now;
+        photo_trace_sample();
+        if (now - g_state_start_ms >= MOTOR_FWD_MS) {
+            if (MOTOR_BRAKE_MS > 0) {
+                busy_motor_brake();               // 先短刹车，缓解换向冲击
+                g_state = SUB_STATE_BRAKE;
+            } else if (MOTOR_REV_MS > 0) {
+                busy_motor_start_reverse();
+                g_state = SUB_STATE_REVERSE;
+            } else {
+                busy_motor_stop();
+                g_state = SUB_STATE_PAUSE;
             }
-        } else {
-            // 光敏模式：电机启动完成 → 等待光敏检测到牌
-            if (now - g_state_start_ms >= MOTOR_STARTUP_MS) {
-                g_state = SUB_STATE_WAIT_CARD;
-                g_state_start_ms = now;
-            }
+            g_state_start_ms = now;
             // TODO: 电流检测 → 堵转立即 sub_mark_error(EVT_ERROR_MOTOR_STALL)
         }
         break;
@@ -200,6 +232,7 @@ void sub_state_run(void) {
     case SUB_STATE_BRAKE:
         // 保持短刹车，再进入反转（或直接进入停顿）
         busy_motor_brake();
+        photo_trace_sample();
         if (now - g_state_start_ms >= MOTOR_BRAKE_MS) {
             if (MOTOR_REV_MS > 0) {
                 busy_motor_start_reverse();
@@ -215,6 +248,7 @@ void sub_state_run(void) {
     case SUB_STATE_REVERSE:
         // 主动维持反转驱动（GPIO 状态异常自愈）
         busy_motor_start_reverse();
+        photo_trace_sample();
         if (now - g_state_start_ms >= MOTOR_REV_MS) {
             busy_motor_stop();
             g_state = SUB_STATE_PAUSE;
@@ -223,41 +257,17 @@ void sub_state_run(void) {
         break;
 
     case SUB_STATE_PAUSE:
-        // 每张牌之间的停顿：让牌完全出去、牌堆复位
+        // 电机已停：这一段既是"牌堆复位"的停顿，也是判定前的稳定窗口
         busy_motor_stop();
         if (now - g_state_start_ms >= MOTOR_PAUSE_MS) {
-            g_state = SUB_STATE_SEND_BACK;
-        }
-        break;
-
-    case SUB_STATE_WAIT_CARD:
-        // 光电门模式：等“有牌”（电平已去抖）
-        if (sub_photo_present()) {
-            g_state = SUB_STATE_WAIT_GONE;         // 牌到门口了，继续等它完全离开
-            g_state_start_ms = now;
-        } else if (now - g_state_start_ms >= PHOTO_TIMEOUT_MS) {
-            photo_enter_jam("no card seen");       // 一直没看到牌：漏发或卡在里面
-        }
-        break;
-
-    case SUB_STATE_WAIT_GONE:
-        // 等“无牌”并稳定 PHOTO_GONE_MS → 这张牌完整通过
-        if (!sub_photo_present() && sub_photo_stable_ms() >= PHOTO_GONE_MS) {
-            busy_motor_stop();
-            proto_send(EVT_CARD_OUT, NULL, 0);     // 实时上报：已出一张
-            // 复用原有收尾动作：刹车 → 反转回退 → 停顿
-            if (MOTOR_BRAKE_MS > 0) {
-                busy_motor_brake();
-                g_state = SUB_STATE_BRAKE;
-            } else if (MOTOR_REV_MS > 0) {
-                busy_motor_start_reverse();
-                g_state = SUB_STATE_REVERSE;
+            // 动作结束（正转/刹车/反转都跑完、电机停稳）→ 判定这一张
+            card_result_t r = USE_PHOTO_SENSOR ? photo_trace_eval() : CARD_RESULT_OUT;
+            if (r == CARD_RESULT_OUT) {
+                proto_send(EVT_CARD_OUT, NULL, 0);    // 确认这一张已成功发出
+                g_state = SUB_STATE_SEND_BACK;
             } else {
-                g_state = SUB_STATE_PAUSE;
+                photo_enter_retract(r);               // 失败 → 反转撤回 + 重试（见 RETRACT_WAIT）
             }
-            g_state_start_ms = now;
-        } else if (sub_photo_present() && sub_photo_stable_ms() >= PHOTO_JAM_MS) {
-            photo_enter_jam("card stuck at exit"); // 有牌一直不走 = 卡在出牌口
         }
         break;
 

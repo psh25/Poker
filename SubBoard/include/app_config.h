@@ -11,8 +11,8 @@
 // 单张动作固定为：正转 MOTOR_FWD_MS → 刹车 MOTOR_BRAKE_MS → 反转 MOTOR_REV_MS → 停顿 MOTOR_PAUSE_MS
 // ⚠️ MOTOR_FWD_MS 现在是**唯一的出牌推进时长**（不再"等牌离开光门"才换相），
 //    必须保证能把一张牌完整推过出牌口并留出余量；太短会把"还在路上"的牌判成卡住。
-#define MOTOR_FWD_MS 390   // 正转出牌时长：一张牌送出的时间
-#define MOTOR_REV_MS 200   // 出牌后反转回退时长（让下一张退到摄像头可拍位置；0=不反转）
+#define MOTOR_FWD_MS 380   // 正转出牌时长：一张牌送出的时间
+#define MOTOR_REV_MS 250   // 出牌后反转回退时长（让下一张退到摄像头可拍位置；0=不反转）
 #define MOTOR_BRAKE_MS 100 // 正转→反转之间的短刹车（AIN1=AIN2=高，PWM=0；0=直接换向）
 #define MOTOR_PAUSE_MS 100 // 每张牌之间的停顿（让牌完全出去、牌堆复位；0=不停）
 #define MOTOR_DUTY 200     // 正转 PWM 占空比（约 78%）

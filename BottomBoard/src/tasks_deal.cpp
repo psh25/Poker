@@ -33,9 +33,10 @@ static uint8_t  s_deal_error_count = 0;
 static char     s_deal_errors[DEAL_ERROR_MAX][24];
 // 发牌任务的工作计划缓冲（顺序/随机每局现场生成；CLI dealinfo 也读它）
 static deal_plan_t s_runningPlan;
-// 模拟事件开关：**默认关闭**，且只对 TEST 方案生效（见 vDealTask）。
-// 真实方案一律走真实外设，避免模拟事件掩盖硬件故障。
-static bool     s_sim_auto = false;
+// 无子板模式开关（"子板仿真"）：打开后底板不再依赖子板——
+// 跳过在线检查、不下发动作类命令，每张牌自己补发模拟事件（见 vDealTask）。
+// 默认值来自 app_config.h 的 USE_SUBBOARD；运行时用 CLI `subsim on|off` 切换。
+static bool     s_sim_auto = (USE_SUBBOARD == 0);
 
 // 已发牌面数据：每张 2 字节（[card, src]，见 protocol.h 的牌面编码），
 // 按发牌顺序保存，供后续整局上传小程序使用。
@@ -53,6 +54,30 @@ static void deal_add_error(const char *msg) {
     }
 }
 
+// ---- 对外状态快照（互斥量保护）----
+// 单写者（本任务的发牌流程）/ 多读者（CLI `dealinfo`，将来还有 BLE 上传）。
+// 逐项读 s_deal_* 会得到"新进度 + 旧错误"这种瞬时组合，所以每次业务变量更新完
+// 都在这里**整体发布**一份快照，读者只拿快照（见 deal_get_status）。
+static deal_status_t s_statusPub;
+
+static void deal_publish_status(void) {
+    deal_status_t tmp;
+    tmp.scheme = s_deal_scheme;
+    tmp.deck = s_deal_deck;
+    tmp.progress = s_deal_progress;
+    tmp.dealt = s_dealt_count;
+    tmp.total = s_runningPlan.totalCards;
+    tmp.errorActive = s_deal_error_active;
+    tmp.errorCount = s_deal_error_count;
+    for (uint8_t i = 0; i < DEAL_ERROR_MAX; i++) {
+        strncpy(tmp.errors[i], s_deal_errors[i], sizeof(tmp.errors[i]) - 1);
+        tmp.errors[i][sizeof(tmp.errors[i]) - 1] = '\0';
+    }
+    xSemaphoreTake(xDealStatusMutex, portMAX_DELAY);
+    s_statusPub = tmp;                  // 结构体整体替换：读者不会看到半新半旧
+    xSemaphoreGive(xDealStatusMutex);
+}
+
 // 发牌界面刷新：携带当前牌堆、进度、阶段状态与全部错误
 static void deal_update_screen(const char *status) {
     display_cmd_t cmd = {};
@@ -66,12 +91,13 @@ static void deal_update_screen(const char *status) {
     }
     cmd.payload.dealing.errorCount = s_deal_error_count;
     send_display_command(&cmd);
+    deal_publish_status();          // 状态变化后同步对外快照（CLI/BLE 读这里）
 }
 
-// 发牌失败：向子板发停机 → 屏幕显示错误 → 停在 DEALING 等编码器重置
+// 发牌失败：向子板发停机（无子板模式跳过）→ 屏幕显示错误 → 停在 DEALING 等编码器重置
 static void deal_fail(void) {
     s_deal_error_active = true;
-    proto_send(CMD_STOP, NULL, 0);            // 底板向子板发送停机信息
+    if (!s_sim_auto) proto_send(CMD_STOP, NULL, 0);   // 底板向子板发送停机信息
     deal_update_screen("DEAL ERROR");
     xEventGroupSetBits(xStateEventGroup, BIT_DEAL_ERROR);
 }
@@ -130,6 +156,10 @@ void vDealTask(void *pv) {
     for (;;) {
         if (xSemaphoreTake(xDealSemaphore, portMAX_DELAY) != pdPASS) continue;
 
+        // 采样中止代次：必须在"进入 DEALING 之前"取，才能覆盖整个启动窗口。
+        // 若窗口内来了 STOP/RESET，代次会变，后面那次清除就会失败 → 放弃本次发牌。
+        const uint32_t abortGen = motion_abort_generation();
+
         // 等状态机切到 DEALING（最多 500ms）：编码器/主机是"先给信号量、再置事件位"，
         // 这里等一下可保证屏幕与状态先就位；若期间被 STOP/RESET 打断就放弃本次请求。
         uint32_t t_state = millis();
@@ -162,19 +192,31 @@ void vDealTask(void *pv) {
             continue;
         }
         const deal_plan_t *plan = &s_runningPlan;
-        motion_abort_clear();          // 新一局：清掉上一次 STOP/RESET 留下的中止标志
 
-        // 模拟事件：只对 TEST 方案生效，且默认关闭（真实方案一律走真实外设）
-        bool simOn = s_sim_auto && (s_deal_scheme == DEAL_INDEX_TEST);
+        // 新一局：清掉上一次 STOP/RESET 留下的中止标志。
+        // 只有"启动窗口内没有新的 STOP/RESET"（代次未变）才允许清，否则放弃本次启动。
+        if (!motion_abort_clear_if_generation(abortGen)) {
+            Serial.println("[DEAL] 启动窗口内收到 STOP/RESET，放弃本次发牌");
+            continue;
+        }
+        // 清完再确认一次状态：避免"清除过程中被 RESET"时还继续往下跑
+        if (state_get_current() != STATE_DEALING) {
+            Serial.println("[DEAL] 清除中止标志后状态已不是 DEALING，放弃本次发牌");
+            continue;
+        }
 
-        // 真实模式下要求子板在线，否则直接拒绝，避免白等一串超时
-        if (!simOn && !sub_comm_online()) {
+        // 无子板模式（CLI `subsim on` / 编译期 USE_SUBBOARD=0）：
+        // 跳过在线检查、不下发动作类命令，每张牌由底板自己补发模拟事件。
+        const bool subSim = s_sim_auto;
+
+        // 正常模式要求子板在线，否则直接拒绝，避免白等一串超时
+        if (!subSim && !sub_comm_online()) {
             deal_add_error("sub offline");
-            Serial.println("[DEAL] 子板不在线，已取消（先检查共地/串口接线）");
+            Serial.println("[DEAL] 子板不在线，已取消（查共地/串口接线；单独测底板可敲 subsim on）");
             deal_fail();
             continue;
         }
-        if (simOn) Serial.println("[SIM] TEST 方案：使用模拟事件（simauto off 可关闭）");
+        if (subSim) Serial.println("[SIM] 无子板模式：底板自己模拟子板事件（subsim off 关闭）");
 
         // 旋转测试：不发牌，底盘连续转若干圈后自动回 IDLE
         if (plan->mode == DEAL_MODE_ROTATE_TEST) {
@@ -223,11 +265,14 @@ void vDealTask(void *pv) {
                 deal_sim_t sim = {};
 
                 // 1) 底板 → 子板：截图指令（子板把 PIN_CAM_TRIG 拉低一个脉冲）
-                deal_update_screen("cam capture");
-                if (!proto_send(CMD_CAM_CAPTURE, NULL, 0)) {
-                    deal_add_error("tx queue full");
-                    deal_fail();
-                    break;
+                //    无子板模式跳过：没有子板可发，牌面直接由下面的模拟事件给出
+                if (!subSim) {
+                    deal_update_screen("cam capture");
+                    if (!proto_send(CMD_CAM_CAPTURE, NULL, 0)) {
+                        deal_add_error("tx queue full");
+                        deal_fail();
+                        break;
+                    }
                 }
 
                 // 2) 转到本张牌对应的实体牌堆（同组后续张 delta=0，立即返回）
@@ -244,7 +289,7 @@ void vDealTask(void *pv) {
                 snprintf(status, sizeof(status), "%s face %u/%u",
                          g->label, (unsigned)k + 1, (unsigned)g->count);
                 deal_update_screen(status);
-                if (simOn) {
+                if (subSim) {
                     sim.type = EVT_CARD_VALUE;
                     sim.len = 2;
                     sim.data[0] = (uint8_t)(dealt % 52);   // 模拟牌面：0~51 轮换
@@ -252,7 +297,7 @@ void vDealTask(void *pv) {
                     sim.delayMs = SIM_CAMERA_DELAY_MS;
                 }
                 bool haveFace = deal_wait_evt_core(xSubboardRxQueue, EVT_CARD_VALUE, CAMERA_TIMEOUT_MS,
-                                                   &face, simOn ? &sim : NULL);
+                                                   &face, subSim ? &sim : NULL);
                 if (!haveFace) {
                     if (motion_abort_requested()) break;   // STOP/RESET：静默退出
                     deal_add_error("card face timeout");   // 未识别到牌面 → 立即停机
@@ -260,20 +305,22 @@ void vDealTask(void *pv) {
                     break;
                 }
 
-                // 4) 下发子板发牌指令
+                // 4) 下发子板发牌指令（无子板模式跳过）
                 snprintf(status, sizeof(status), "deal %s %u/%u",
                          g->label, (unsigned)k + 1, (unsigned)g->count);
                 deal_update_screen(status);
-                if (!proto_send(CMD_DEAL_START, NULL, 0)) {
-                    deal_add_error("tx queue full");
-                    deal_fail();
-                    break;
+                if (!subSim) {
+                    if (!proto_send(CMD_DEAL_START, NULL, 0)) {
+                        deal_add_error("tx queue full");
+                        deal_fail();
+                        break;
+                    }
                 }
 
                 // 5) 等待本张牌发出（光电门 EVT_CARD_OUT）
-                if (simOn) { sim.type = EVT_CARD_OUT; sim.len = 0; sim.delayMs = SIM_PHOTO_DELAY_MS; }
+                if (subSim) { sim.type = EVT_CARD_OUT; sim.len = 0; sim.delayMs = SIM_PHOTO_DELAY_MS; }
                 if (!deal_wait_evt_core(xSubboardRxQueue, EVT_CARD_OUT, PHOTO_TIMEOUT_MS, NULL,
-                                        simOn ? &sim : NULL)) {
+                                        subSim ? &sim : NULL)) {
                     if (motion_abort_requested()) break;   // STOP/RESET：静默退出
                     deal_add_error("card not out");
                     deal_fail();
@@ -281,9 +328,9 @@ void vDealTask(void *pv) {
                 }
 
                 // 6) 等子板收尾完成（刹车/反转/停顿）→ EVT_DEAL_DONE，才允许下一张
-                if (simOn) { sim.type = EVT_DEAL_DONE; sim.len = 0; sim.delayMs = SIM_PHOTO_DELAY_MS; }
+                if (subSim) { sim.type = EVT_DEAL_DONE; sim.len = 0; sim.delayMs = SIM_PHOTO_DELAY_MS; }
                 if (!deal_wait_evt_core(xSubboardRxQueue, EVT_DEAL_DONE, PHOTO_TIMEOUT_MS, NULL,
-                                        simOn ? &sim : NULL)) {
+                                        subSim ? &sim : NULL)) {
                     if (motion_abort_requested()) break;   // STOP/RESET：静默退出
                     deal_add_error("deal done timeout");
                     deal_fail();
@@ -314,6 +361,7 @@ void vDealTask(void *pv) {
             continue;
         }
         s_deal_progress = 100;
+        deal_publish_status();
         Serial.printf("[GAME] done: %u cards\n", (unsigned)dealt);
 
         // 全部发完 → DEALING → GAME_ACTIVE
@@ -324,18 +372,12 @@ void vDealTask(void *pv) {
 // ---- 供 CLI 读取的运行状态快照（发牌任务写，这里做一次性拷贝）----
 void deal_get_status(deal_status_t *out) {
     if (!out) return;
-    out->scheme = s_deal_scheme;
-    out->deck = s_deal_deck;
-    out->progress = s_deal_progress;
-    out->dealt = s_dealt_count;
-    out->total = s_runningPlan.totalCards;
-    out->errorActive = s_deal_error_active;
-    out->errorCount = s_deal_error_count;
-    for (uint8_t i = 0; i < DEAL_ERROR_MAX; i++) {
-        strncpy(out->errors[i], s_deal_errors[i], sizeof(out->errors[i]) - 1);
-        out->errors[i][sizeof(out->errors[i]) - 1] = 0;
-    }
+    // 只读发布好的快照：保证 scheme/deck/progress/dealt/total/error 来自同一时刻
+    xSemaphoreTake(xDealStatusMutex, portMAX_DELAY);
+    *out = s_statusPub;
+    xSemaphoreGive(xDealStatusMutex);
 }
 
+// ---- 无子板模式开关（CLI `subsim on|off`；默认值见 app_config.h USE_SUBBOARD）----
 void deal_sim_set_auto(bool on) { s_sim_auto = on; }
 bool deal_sim_get_auto(void) { return s_sim_auto; }

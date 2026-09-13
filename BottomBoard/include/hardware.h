@@ -4,9 +4,17 @@
 #include <stdbool.h>
 
 void init_hardware(void);   // GPIO / UART / SPI 初始化
-void init_interrupts(void); // 中断挂接（必须在 create_itc 之后调用）
+void init_interrupts(void); // 中断挂接：编码器 A/B 相（必须在 create_itc 之后调用）
 void tmc2209_init(void);    // 底盘步进初始化（AccelStepper；函数名沿用早期版本）
 void hall_homing(void);     // 霍尔两段式自动归零
+
+// ---- 旋转编码器：A/B 相走 GPIO 中断 + 四态正交解码（实现在 hardware.cpp）----
+// 中断里只累加计数，任务通过 encoder_take_steps() 消费，避免 1ms 轮询在快转时丢步。
+int32_t encoder_take_steps(void);   // 取走累计格数（同时清零）；+1/-1 = 顺/逆时针一格
+void    encoder_reset_steps(void);  // 丢弃累计（开机/自检后清一次）
+
+// ---- 子板串口接收：中断写环形缓冲 → 子板通信任务读取 ----
+bool sub_uart_read_byte(uint8_t *b);   // true = 取到一个字节
 
 // ---- 外设自检（架构 v2 第一章 / 第八章；实现在 hardware.cpp）----
 void self_test(void);        // 开机自检：自动项 + 可观察项（屏幕汇总 + 底盘微动 + 与子板握手）
@@ -27,9 +35,12 @@ bool chassis_rotate_to_angle(int16_t angleDeg);  // 底盘转盘转到指定角�
 bool chassis_rotate_turns(int32_t turns);        // 底盘沿同一方向连续转 turns 圈（顶层圈数），true=到位
 
 // ---- 中止请求（STOP/RESET 用；底盘运动循环与发牌任务都会尽早退出）----
-void motion_abort_request(void);
-void motion_abort_clear(void);
-bool motion_abort_requested(void);
+// 带"代次"防竞态：STOP/RESET 递增代次；发牌任务先采样代次、只有代次没变才允许清除标志，
+// 避免"新一局把启动窗口内到达的 STOP/RESET 清掉"（见 tasks_deal.cpp 的 vDealTask）。
+void     motion_abort_request(void);
+bool     motion_abort_requested(void);
+uint32_t motion_abort_generation(void);                    // 取当前代次
+bool     motion_abort_clear_if_generation(uint32_t gen);   // 代次未变才清除；true = 已清除
 
 // ---- 任务内占位函数（TODO：按架构实现具体逻辑）----
 void busy_subboard_event(uint8_t type, const uint8_t *data, uint8_t len);

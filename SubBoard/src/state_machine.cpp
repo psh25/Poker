@@ -94,6 +94,7 @@ void sub_state_handle_command(uint8_t cmd, const uint8_t *data, uint8_t len) {
     case CMD_STOP:
     case CMD_RESET:
         busy_motor_stop();
+        sub_camera_cancel();          // 终止截图会话：丢掉可能迟到的识别结果（见 hardware.cpp）
         g_error = 0;
         sub_auto_deal_stop();         // 停止/复位同时取消自动发牌
         g_state = SUB_STATE_IDLE;

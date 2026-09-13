@@ -163,6 +163,7 @@ static bool          s_cam_uart_inited = false;  // Serial2 是否已初始化
 static bool          s_cam_trig_inited = false;  // PIN_CAM_TRIG 是否已配置成输出
 static char          s_cam_line[CAM_LINE_MAX];
 static uint8_t       s_cam_line_len = 0;
+static char          s_cam_last_line[CAM_LINE_MAX];  // 最后一条完整行原文（串口直接打印用）
 
 // ---- 摄像头链路初始化（拆成两半，谁用谁初始化）----
 // UART：发指令与收回传都要用，可以单独提前初始化。
@@ -206,6 +207,28 @@ void sub_camera_trigger(void) {
     dbg_println("[CAM] TRIG low (trigger)");
 }
 
+// 终止当前截图会话（底板 CMD_STOP / CMD_RESET 时调用）。
+// 为什么需要：复位/停机只复位状态机和电机的，如果这里不清会话，
+// 摄像头迟到的 RESULT 仍会被 sub_camera_service() 解析成 EVT_CARD_VALUE 发上去，
+// 而那已经和下一局无关了（下一局的等待方会把它当成自己的牌面）。
+// 动作：TRIG 恢复空闲高（下次触发才有正确的下降沿）、丢掉 Serial2 残留、会话状态复位。
+void sub_camera_cancel(void) {
+    if (!s_cam_uart_inited && !s_cam_trig_inited) return;   // 摄像头链路还没用过，没什么可取消
+    bool wasBusy = (s_cam_state != CAM_IDLE);
+
+    if (s_cam_trig_inited) digitalWrite(PIN_CAM_TRIG, HIGH);  // 回空闲高，等下次下降沿
+    if (s_cam_uart_inited) {
+        while (Serial2.available() > 0) (void)Serial2.read();
+    }
+    s_cam_state       = CAM_IDLE;
+    s_cam_got_result  = false;
+    s_cam_cam_error   = false;
+    s_cam_payload_len = 0;
+    s_cam_line_len    = 0;
+
+    if (wasBusy) dbg_println("[CAM] session cancelled by STOP/RESET");
+}
+
 // ---- 子板 → 摄像头：下发一行文本指令（ASCII + CRLF，与 RESULT: 回传同风格）----
 static void cam_send_line(const char *line) {
     cam_ensure_uart();
@@ -226,6 +249,10 @@ static void cam_send_line(const char *line) {
 // 说明：OpenMV 端 main_standalone.py 目前不读 UART，因此“无回应”在摄像头改代码前属正常现象，
 //       自检只把它记为“未回应”，不当成致命错误。
 bool sub_camera_calibrate(uint32_t waitMs) {
+    // 若上一次截图会话还没结束（比如触发后一直没等到结果），先取消：
+    // 否则校准的回应会和"截图结果"混在一起，分不清是谁回的。
+    if (s_cam_state != CAM_IDLE) sub_camera_cancel();
+
     dbg_println("[CAM] calibrate: send command, then wait for reply...");
     cam_send_line(CAM_CMD_CALIBRATE);
 
@@ -310,6 +337,10 @@ static bool cam_parse(void) {
         s_cam_line[s_cam_line_len] = '\0';
         s_cam_line_len = 0;
 
+        // 留一份原文：上报时直接把摄像头发来的文本打出来（解码结果只在协议层用）
+        strncpy(s_cam_last_line, s_cam_line, sizeof(s_cam_last_line) - 1);
+        s_cam_last_line[sizeof(s_cam_last_line) - 1] = '\0';
+
         const char *prefix = "RESULT:";
         if (strncmp(s_cam_line, prefix, 7) != 0) {
             dbg_printf("[CAM] ignore line: %s\n", s_cam_line);
@@ -353,11 +384,11 @@ void sub_camera_service(void) {
         if (!s_cam_got_result && cam_parse()) {
             s_cam_got_result = true;
             if (s_cam_cam_error) {
-                dbg_println("[CAM] RESULT:ERROR -> report CAM fail");
+                dbg_printf("[CAM] %s -> report CAM fail\n", s_cam_last_line);
                 proto_send(EVT_ERROR_CAM_FAIL, NULL, 0);
             } else {
-                dbg_printf("[CAM] result card=%u src=%u\n",
-                           (unsigned)s_cam_payload[0], (unsigned)s_cam_payload[1]);
+                // 直接回显摄像头原文（不打印解码后的 card/src，便于对着摄像头端排查）
+                dbg_printf("[CAM] %s\n", s_cam_last_line);
                 proto_send(EVT_CARD_VALUE, s_cam_payload, s_cam_payload_len);
             }
             s_cam_state = CAM_IDLE;

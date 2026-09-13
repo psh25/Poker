@@ -53,12 +53,21 @@ static void sub_cli_run(const char *line) {
         dbg_println("[CLI] auto <n>    = 自动发 n 张后停");
         dbg_println("[CLI] auto off    = 停止自动发牌（当前这张发完为止）");
         dbg_println("[CLI] mtest       = 电机自检（正转/反转各 300ms）");
+        dbg_println("[CLI] camcalib    = 向摄像头发校准指令并等回应（阻塞约 1.5s）");
         return;
     }
 
     // 电机自检：正转/反转各 300ms（核对引脚/供电/接线）
     if (strcmp(line, "mtest") == 0) {
         motor_self_test();
+        return;
+    }
+
+    // 摄像头调试：向摄像头发一行校准指令并等回应（阻塞 CAM_CALIB_WAIT_MS）
+    // 用来确认摄像头端有没有实现 UART 命令接收；指令内容见 app_config.h 的 CAM_CMD_CALIBRATE
+    if (strcmp(line, "camcalib") == 0) {
+        bool ok = sub_camera_calibrate(CAM_CALIB_WAIT_MS);
+        dbg_printf("[CLI] camcalib: %s\n", ok ? "camera replied" : "no reply / error");
         return;
     }
 

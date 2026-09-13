@@ -49,7 +49,7 @@ static void sub_debug_print_help(void) {
     Serial.println("[CLI]      cmd: dealstart|stop|statusquery|selftest|reset|camcapture 或 hex");
     Serial.println("[CLI] sim <type> [hex data...]     - 模拟子板→底板事件（喂给协议分发）");
     Serial.println("[CLI]      type: ready|cardout|cardvalue|dealdone|errorcardjam|errormotorstall|errorcamfail|ack|status");
-    Serial.println("[CLI] simauto [on|off]             - 方案四自动模拟摄像头(0.5s)/光敏(默认 on)");
+    Serial.println("[CLI] subsim [on|off]              - 无子板模式：底板自己模拟子板事件（旧别名 simauto）");
     Serial.println("[CLI] idle | select <n> | dealing <pct> - 底板屏幕测试");
 }
 
@@ -396,18 +396,24 @@ static void sub_debug_cli_process(const char *line) {
         return;
     }
 
-    // simauto [on|off]：方案四（TEST）自动模拟摄像头识别与光敏确认
-    if (strcmp(line, "simauto") == 0 || strncmp(line, "simauto ", 8) == 0) {
-        if (line[7] == ' ') {
-            const char *p = line + 8;
-            if (strcmp(p, "on") == 0)  { deal_sim_set_auto(true); }
-            else if (strcmp(p, "off") == 0) { deal_sim_set_auto(false); }
+    // subsim [on|off]：无子板模式（底板自己模拟子板事件；`simauto` 是旧别名，语义相同）
+    //   开：跳过"子板不在线"检查、不下发动作类命令，每张牌补发模拟的牌面/出牌/收尾事件
+    //   关：回到正常模式，一切走真实子板
+    if (strcmp(line, "subsim") == 0 || strncmp(line, "subsim ", 7) == 0 ||
+        strcmp(line, "simauto") == 0 || strncmp(line, "simauto ", 8) == 0) {
+        const char *sp = strchr(line, ' ');
+        if (sp) {
+            const char *p = sp + 1;
+            while (*p == ' ') p++;
+            if (strcmp(p, "on") == 0)       deal_sim_set_auto(true);
+            else if (strcmp(p, "off") == 0) deal_sim_set_auto(false);
             else {
-                Serial.println("[CLI] simauto: on|off（或直接 simauto 查看状态）");
+                Serial.println("[CLI] subsim: on|off（或直接 subsim 查看状态）");
                 return;
             }
         }
-        Serial.printf("[CLI] simauto = %s（仅方案四 TEST 生效：摄像头 %u ms / 光敏 %u ms 自动注入）\n",
+        Serial.printf("[CLI] subsim = %s（无子板模式：跳过在线检查、不下发动作命令；"
+                      "模拟延时 摄像头 %u ms / 光敏 %u ms）\n",
                       deal_sim_get_auto() ? "ON" : "OFF",
                       (unsigned)SIM_CAMERA_DELAY_MS, (unsigned)SIM_PHOTO_DELAY_MS);
         return;

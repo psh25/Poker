@@ -11,9 +11,9 @@ void create_all_tasks(void);
 void host_notify_state(uint8_t state);
 
 void vBluetoothTask(void *pv);      // 高(3)   队列阻塞
-void vSubboardTask(void *pv);       // 中(2)   队列 + 串口，固定核心 0
+void vSubboardTask(void *pv);       // 中(2)   子板串口中断 + 队列，固定核心 0
 void vDealTask(void *pv);           // 中高(2) 信号量触发，固定核心 1
-void vEncoderTask(void *pv);        // 中(2)   中断 + 队列
+void vEncoderTask(void *pv);        // 中(2)   A/B 中断解码 + SW 轮询
 void vDisplayTask(void *pv);        // 低(1)   队列触发（事件驱动）
 void vStateManagerTask(void *pv);   // 低(1)   事件组触发
 void vMonitorTask(void *pv);        // 低(1)   定时器周期触发

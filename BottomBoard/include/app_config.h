@@ -45,8 +45,13 @@
 static const int16_t kDeckAngles[DECK_COUNT] = { 0, 45, 90, 135, 180, 225, 270, 315 };
 
 // ================= 时序 / 超时（ms）=================
-#define ENCODER_DEBOUNCE_MS    5     // 编码器消抖（架构 v2 异常处理 8.1）
-#define ENCODER_LONG_PRESS_MS  2000  // 长按判定（GAME_ACTIVE：确认结束并回 IDLE）
+#define ENCODER_DEBOUNCE_MS    10    // SW 消抖：电平需稳定这么久才认可（原先代码硬编码 10，这里改回用本宏）
+#define ENCODER_LONG_PRESS_MS  2000  // 长按判定（IDLE：切换发牌方式；GAME_ACTIVE：确认结束并回 IDLE）
+// A/B 相已改由 GPIO 中断做四态解码（见 hardware.cpp）：
+// 同方向两次跳变间隔小于此值判为抖动丢弃。人手最快约 1ms 一次跳变，200µs 不会误伤真实转动。
+#define ENCODER_ISR_GUARD_US   200
+// 编码器任务节拍：A/B 已在中断里解码，任务只消费格数 + 轮询 SW，不需要再跑 1ms。
+#define ENCODER_POLL_MS        5
 // 等待子板 EVT_CARD_OUT / EVT_DEAL_DONE 的超时。
 // 必须大于子板最坏情况（卡牌 + 撤回 + 重试全部走完才报错）：
 //   等牌 1.5s + 撤回 0.8s + 等门清空 0.5s + 重试 1.5s + 撤回 0.8s + 等门清空 0.5s ≈ 5.7s
@@ -72,7 +77,20 @@ static const int16_t kDeckAngles[DECK_COUNT] = { 0, 45, 90, 135, 180, 225, 270, 
 #define SELFTEST_CHASSIS_DEG        3.0F  // 微动角度（顶层，度）；来回各一次，净位移 0，不改变零点
 #define SELFTEST_SHOW_MS            2000  // 屏幕显示自检汇总的时间（ms）
 
-// ================= 测试模拟（方案四 TEST；摄像头/光敏未就绪）=================
+// ================= 子板 / 无子板模式 =================
+// 底板与子板经常分开测试，这个开关决定"上电时默认认为子板在不在"：
+//   USE_SUBBOARD = 1（默认）：正常模式——要求子板在线，一切都走真实子板；
+//   USE_SUBBOARD = 0        ：上电即进入"无子板模式"，等同开机后在串口敲 `subsim on`。
+// 运行时切换不需要重新编译：底板串口 `subsim on|off`（`simauto` 是旧别名）。
+//
+// 无子板模式下的行为：
+//   ① 跳过"子板不在线就拒绝开局"的检查；
+//   ② 不再向子板下发**动作类**命令（截图 / 发牌 / 停机 / 复位），免得误驱动还连着的真子板；
+//   ③ 每张牌的牌面、出牌成功、单张完成由底板自己按下面的 SIM_* 延时补发模拟事件。
+//   心跳 CMD_STATUS_QUERY 仍然发（只用于在线状态显示，不产生动作）。
+#define USE_SUBBOARD 1
+
+// ================= 测试模拟延时（无子板模式 / 方案四 TEST 用）=================
 #define SIM_CAMERA_DELAY_MS    500   // 【临时测试】模拟摄像头识别耗时 0.5s；恢复时改回 5000
 #define SIM_PHOTO_DELAY_MS     300   // 模拟光敏确认：下发发牌指令后多久认为已出牌
 
@@ -82,8 +100,8 @@ static const int16_t kDeckAngles[DECK_COUNT] = { 0, 45, 90, 135, 180, 225, 270, 
 #define CHASSIS_STEPS_PER_REV       (CHASSIS_FULL_STEPS_PER_REV * CHASSIS_MICROSTEPS)
 #define CHASSIS_GEAR_NUM            33       // 齿轮传动比：电机 33 齿 : 顶层 10 齿
 #define CHASSIS_GEAR_DEN            10
-#define CHASSIS_RPM                 180.0F   // 电机轴转速（rpm）；顶层转速 = CHASSIS_RPM ÷ 3.3
-#define CHASSIS_ACCEL_STEPS_PER_S2  80000.0F // 梯形加减速（step/s²）,越小启停越柔和
+#define CHASSIS_RPM                 30.0F   // 电机轴转速（rpm）；顶层转速 = CHASSIS_RPM ÷ 3.3
+#define CHASSIS_ACCEL_STEPS_PER_S2  5000.0F // 梯形加减速（step/s²）,越小启停越柔和
 #define CHASSIS_SETTLE_MS           500      // 使能后稳定等待（ms）
 #define CHASSIS_MOVE_SETTLE_MS      100      // 每次转到目标位置后的稳定等待（ms）：等机械停稳再发牌
 #define CHASSIS_MOVE_TIMEOUT_MS     60000    // 旋转超时保护基准（ms）；长距离按预计用时自动放宽
@@ -94,3 +112,6 @@ static const int16_t kDeckAngles[DECK_COUNT] = { 0, 45, 90, 135, 180, 225, 270, 
 #define SUB_UART_BAUD        115200
 #define SUB_UART_RX_PIN      PIN_RING_UART_NEG   // 物理 RX：NEG（子板 TX 送来）
 #define SUB_UART_TX_PIN      PIN_RING_UART_POS   // 物理 TX：POS（子板 RX 接收）
+// 接收改由串口中断写环形缓冲（见 hardware.cpp），通信任务只做解析，不再整帧轮询串口。
+#define SUB_RX_RING_SIZE     256   // 环形缓冲大小（字节）
+#define SUB_COMM_POLL_MS     5     // 通信任务节拍：决定"解析 + 发队列 + CLI"的兜底频率

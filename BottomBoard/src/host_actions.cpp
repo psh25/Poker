@@ -17,6 +17,7 @@
 #include "deal_selection.h"
 #include "itc.h"
 #include "tasks.h"
+#include "tasks_deal.h"
 #include "host_actions.h"
 #include "state_machine.h"
 #include "protocol.h"
@@ -103,13 +104,14 @@ void host_action_deal_start(void) {
 
 void host_action_stop(void) {
     motion_abort_request();                               // 立即中止正在执行的发牌/转动
-    proto_send(CMD_STOP, NULL, 0);                        // 停机子板
+    // 停机子板；无子板模式（subsim on / USE_SUBBOARD=0）不下发动作类命令
+    if (!deal_sim_get_auto()) proto_send(CMD_STOP, NULL, 0);
     xEventGroupSetBits(xStateEventGroup, BIT_RESET);      // 底板回 IDLE
 }
 
 void host_action_reset(void) {
     motion_abort_request();                               // 立即中止正在执行的发牌/转动
-    proto_send(CMD_RESET, NULL, 0);                       // 复位子板状态机
+    if (!deal_sim_get_auto()) proto_send(CMD_RESET, NULL, 0);   // 复位子板状态机（无子板模式跳过）
     xEventGroupSetBits(xStateEventGroup, BIT_RESET);      // 底板回 IDLE
 }
 
@@ -124,7 +126,10 @@ static void host_handle_frame(const proto_frame_t *frame) {
     case CMD_DEAL_START:   host_action_deal_start(); break;
     case CMD_STOP:         host_action_stop();       break;
     case CMD_STATUS_QUERY: host_action_status();     break;
-    case CMD_SELF_TEST:    proto_send(CMD_SELF_TEST, NULL, 0); break;  // 转发子板自检
+    case CMD_SELF_TEST:    // 转发子板自检；无子板模式下没有对象可自检
+        if (deal_sim_get_auto()) Serial.println("[HOST] selftest: 无子板模式，跳过（subsim off 恢复）");
+        else                     proto_send(CMD_SELF_TEST, NULL, 0);
+        break;
     case CMD_RESET:        host_action_reset();      break;
     case HOST_CMD_SELECT_SCHEME:
         if (frame->len >= 1) host_action_select(frame->data[0]);

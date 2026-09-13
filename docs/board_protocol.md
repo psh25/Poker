@@ -127,6 +127,7 @@ dealstart | stop | reset | confirm  # 启动发牌 / 停机 / 复位 / 确认方
 subboard                            # 打印子板在线状态与心跳时间
 sub <cmd> [hex data...]             # 底板 → 子板（自动组帧 + 自动算 CRC）
 sim <type> [hex data...]            # 模拟子板 → 底板事件（本地喂给协议分发）
+subsim [on|off]                     # 无子板模式：底板自己模拟子板事件（旧别名 simauto）
 idle | select <n> | dealing <pct>   # 底板屏幕测试
 setstate <idle|dealing|active>      # 强制切换底板状态机（调试）
 game list | game info               # 列出牌局参数 / 当前计划（按当前发牌方式生成）
@@ -145,6 +146,8 @@ game random players=N hand=N [public=N] [bottom=N] [total=N]   # 同上并切到
   例：`CMD_DEAL_START` → `dealstart`、`CMD_STATUS_QUERY` → `statusquery`、`EVT_ERROR_MOTOR_STALL` → `errormotorstall`。
 - `sub` 走 `proto_send()` 自动组帧（含 CRC），**无需手算 len / CRC**；
 - `sim` 直接调用 `proto_on_event()`，等价于子板真的发来一帧（且已通过 CRC 校验）。
+- `subsim on` 是"**无子板模式**"（底板与子板分开调试用）：跳过子板在线检查、不再下发动作类命令，
+  每张牌的牌面/出牌/收尾事件由底板自己补发。细节见 [architecture_v2.md](architecture_v2.md) v3.6 修订说明。
 
 示例：
 
@@ -163,10 +166,18 @@ game info       → 打印当前计划的发牌组（牌堆/张数/标签）
 **子板串口（USB）**同样支持直接注入命令（模拟底板发来）：
 
 ```
-help | dealstart | stop | statusquery | selftest | reset | camcapture | auto [n|off] | mtest | <hex type> [hex data...]
+help | dealstart | stop | statusquery | selftest | reset | camcapture | camcalib | auto [n|off] | mtest | <hex type> [hex data...]
 ```
 
 输入后子板打印 `[CLI] inject ...`、`[SUB] RX:...`，并正常回发 ACK。
+
+其中 `selftest` / `camcapture` 走协议（等同底板发帧），而 **`auto` / `mtest` / `camcalib` 是子板本地命令**、不进协议：
+
+| 本地命令 | 作用 |
+|---|---|
+| `auto [n\|off]` | 自动连续发牌（`n` = 张数，`off` = 停），不需要底板 |
+| `mtest` | 发牌电机自检微动（正转 `SELFTEST_MOTOR_FWD_MS` → 刹车 → 反转） |
+| `camcalib` | 向摄像头 UART 发一行 `CALIBRATE\r\n` 并等回应（阻塞 ~1.5s），用于验证摄像头端是否实现命令接收，详见 [camera_protocol.md](camera_protocol.md) 第 7.2 节 |
 
 ## 7. 新增命令（扩展指南）
 

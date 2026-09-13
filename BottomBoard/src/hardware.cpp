@@ -32,12 +32,123 @@ static constexpr long kStepsPerTopRev = (long)(
 // 只有超时/故障才 disableOutputs() 并把该标志复位。
 static bool s_driverEnabled = false;
 
-// 中止请求：STOP/RESET 时置位，底盘运动循环与发牌任务都尽早退出
-static volatile bool s_motionAbort = false;
+// 中止请求：STOP/RESET 时置位，底盘运动循环与发牌任务都尽早退出。
+// 代次（generation）消除"清除标志"的竞态：STOP/RESET 递增代次，发牌任务先采样代次、
+// 只有代次没变才允许清标志——否则"新一局"会把启动窗口内刚到的 STOP/RESET 清掉，
+// 这一局就继续转下去了（见 tasks_deal.cpp 的 vDealTask）。
+static volatile bool     s_motionAbort = false;
+static volatile uint32_t s_abortGen = 0;
+static portMUX_TYPE      s_abortMux = portMUX_INITIALIZER_UNLOCKED;
 
-void motion_abort_request(void) { s_motionAbort = true; }
-void motion_abort_clear(void)   { s_motionAbort = false; }
+void motion_abort_request(void) {
+    portENTER_CRITICAL(&s_abortMux);
+    s_abortGen++;
+    s_motionAbort = true;
+    portEXIT_CRITICAL(&s_abortMux);
+}
+
 bool motion_abort_requested(void) { return s_motionAbort; }
+
+uint32_t motion_abort_generation(void) { return s_abortGen; }
+
+bool motion_abort_clear_if_generation(uint32_t gen) {
+    bool ok = false;
+    portENTER_CRITICAL(&s_abortMux);
+    if (s_abortGen == gen) { s_motionAbort = false; ok = true; }
+    portEXIT_CRITICAL(&s_abortMux);
+    return ok;
+}
+
+// ================= 中断：中断里只写缓冲 / 只累加计数 =================
+
+// ---- 子板串口（Serial1）接收：中断写环形缓冲，子板通信任务读取 ----
+// 为什么用中断：原来通信任务每 20ms 才轮询一次串口，子板上报的事件最多晚 20ms 才被解析；
+// 发牌流程里每张牌有好几次"发命令 → 等事件"，这个延迟会累加成时序抖动。
+// 中断接收后，字节立刻进缓冲，解析延迟只取决于任务节拍（SUB_COMM_POLL_MS）。
+static volatile uint8_t  s_rx_ring[SUB_RX_RING_SIZE];
+static volatile uint16_t s_rx_head = 0;   // 写入位置（中断里改）
+static volatile uint16_t s_rx_tail = 0;   // 读取位置（任务里改）
+
+static void IRAM_ATTR sub_uart_rx_isr(void) {
+    while (Serial1.available() > 0) {
+        uint8_t b = (uint8_t)Serial1.read();
+        uint16_t next = (uint16_t)((s_rx_head + 1) % SUB_RX_RING_SIZE);
+        if (next == s_rx_tail) continue;      // 缓冲满：丢弃（不完整帧会被 CRC 挡掉）
+        s_rx_ring[s_rx_head] = b;
+        s_rx_head = next;
+    }
+}
+
+bool sub_uart_read_byte(uint8_t *b) {
+    if (s_rx_tail == s_rx_head) return false;
+    *b = s_rx_ring[s_rx_tail];
+    s_rx_tail = (uint16_t)((s_rx_tail + 1) % SUB_RX_RING_SIZE);
+    return true;
+}
+
+// ---- 旋转编码器 A/B 相：GPIO 中断 + 四态正交解码 ----
+// 为什么改用中断：原来任务 1ms 轮询，快速旋转时两次跳变可能落在同一采样周期里 → 丢步；
+// 中断能捕获每一个边沿，任务只消费累计格数（见 vEncoderTask）。
+// 解码表：索引 = (上次 AB << 2) | 本次 AB，值 = 本次跳变方向
+//   合法跳变（每次只有一相变化）→ ±1；两相同时变（抖动/噪声）→ 0，并把累计清零重来
+static const int8_t kEncQuadDelta[16] = {
+     0, +1, -1,  0,
+    -1,  0,  0, +1,
+    +1,  0,  0, -1,
+     0, -1, +1,  0,
+};
+static volatile uint8_t  s_enc_state = 0;      // 上次 AB 组合（A<<1 | B）
+static volatile int8_t   s_enc_quad = 0;       // 同方向累计跳变（满 ±4 = 一格）
+static volatile int32_t  s_enc_total = 0;      // 已确认格数：中断里**单调**累加（+1/-1 每格）
+static int32_t           s_enc_baseline = 0;   // 任务侧上次取走时的基准值（只有消费方读写）
+static volatile int8_t   s_enc_last_dir = 0;   // 上次接受的跳变方向
+static volatile uint32_t s_enc_last_us = 0;    // 上次接受的跳变时刻
+
+static void IRAM_ATTR enc_ab_isr(void) {
+    // 分两次读 A/B 之间电平可能被改变：A 读两次，变了就重读一次 B，取到一致的一对
+    uint8_t a = (uint8_t)digitalRead(PIN_ENC_A);
+    uint8_t b = (uint8_t)digitalRead(PIN_ENC_B);
+    uint8_t a2 = (uint8_t)digitalRead(PIN_ENC_A);
+    if (a2 != a) { a = a2; b = (uint8_t)digitalRead(PIN_ENC_B); }
+
+    uint8_t cur = (uint8_t)((a << 1) | b);
+    uint8_t prev = s_enc_state;
+    if (cur == prev) return;                       // 电平没变（另一相的抖动）→ 忽略
+    s_enc_state = cur;
+
+    int8_t d = kEncQuadDelta[(uint8_t)((prev << 2) | cur)];
+    if (d == 0) { s_enc_quad = 0; return; }        // 两相同时变 = 受扰，清零重来
+
+    // 抖动过滤：同方向、间隔过短的跳变丢弃（真实转动最快约 1ms 一次跳变，不会误伤）
+    uint32_t nowUs = micros();
+    if (d == s_enc_last_dir &&
+        (uint32_t)(nowUs - s_enc_last_us) < (uint32_t)ENCODER_ISR_GUARD_US) {
+        return;
+    }
+    s_enc_last_dir = d;
+    s_enc_last_us = nowUs;
+
+    s_enc_quad = (int8_t)(s_enc_quad + d);
+    if (s_enc_quad >= 4)       { s_enc_quad = 0; s_enc_total++; }
+    else if (s_enc_quad <= -4) { s_enc_quad = 0; s_enc_total--; }
+}
+
+// 取走累计格数（同时把基准推到当前值）。
+// 同步方式：**单写者（GPIO 中断）+ 单读者（编码器任务）**，32 位对齐读写本身是原子的；
+// 用"单调计数 + 基准差值"就不存在"读-改-写"丢更新，也就不需要临界区。
+// （原来用 portENTER_CRITICAL 保护读侧、ISR 却没进同一把锁，跨核时仍可能丢一格。）
+int32_t encoder_take_steps(void) {
+    int32_t now = s_enc_total;            // 原子读
+    int32_t d = now - s_enc_baseline;     // 32 位环绕减法天然正确（增量远小于 2^31）
+    s_enc_baseline = now;                 // 只动基准，不会丢掉中断里刚加的增量
+    return d;
+}
+
+// 丢弃已累计的格数（开机 / 自检后调用）：只动任务侧基准 + 清半格累计
+void encoder_reset_steps(void) {
+    s_enc_baseline = s_enc_total;
+    s_enc_quad = 0;
+}
 
 void init_hardware(void) {
     // 输出
@@ -63,14 +174,29 @@ void init_hardware(void) {
 
     // 子板串口：2 根线 UART（POS=TX → 子板 RX；NEG=RX ← 子板 TX，见 pins_config.h）
     Serial1.begin(SUB_UART_BAUD, SERIAL_8N1, SUB_UART_RX_PIN, SUB_UART_TX_PIN);
+    Serial1.onReceive(sub_uart_rx_isr);   // 中断接收 → 环形缓冲（任务只做解析）
 
     // TODO: TFT_eSPI / SdFat 初始化（片选互斥，架构 v2 1.3）
 }
 
 void init_interrupts(void) {
-    // 必须在 create_itc() 之后调用，确保内核对象已创建。
-    // DIAG 引脚已随需求删除；底盘堵转保护暂由 chassis_rotate_to_angle 的软件超时兜底。
-    // TODO: 最终原理图若恢复硬件堵转检测引脚，再在此挂接中断。
+    // 必须在 create_itc() 之后调用（本函数目前不依赖内核对象，保留该顺序约定）。
+    // DIAG 引脚已随需求删除；底盘堵转保护暂由 chassis_run_relative 的软件超时兜底。
+
+    // 旋转编码器 A/B 相：GPIO 中断 + 四态正交解码（取代原来的 1ms 轮询解码）
+    // 两个引脚都要挂 CHANGE：只挂一相判不出方向。
+    // 先读一次初始电平，避免第一次中断时 prev 是脏值、算出反向的一步。
+    s_enc_state = (uint8_t)(((digitalRead(PIN_ENC_A) ? 1 : 0) << 1) |
+                             (digitalRead(PIN_ENC_B) ? 1 : 0));
+    s_enc_last_dir = 0;
+    s_enc_last_us = 0;
+    encoder_reset_steps();
+    attachInterrupt(digitalPinToInterrupt(PIN_ENC_A), enc_ab_isr, CHANGE);
+    attachInterrupt(digitalPinToInterrupt(PIN_ENC_B), enc_ab_isr, CHANGE);
+    Serial.println("[ENC] A/B quadrature decode on GPIO interrupt (4 transitions = 1 step)");
+
+    // SW 不挂中断：按键是慢事件，任务里按 ENCODER_POLL_MS 轮询 + ENCODER_DEBOUNCE_MS 消抖即可。
+    // TODO: 霍尔接入后在这里挂 CHANGE 中断（一圈一个脉冲，用于归零 / 失步校准）。
 }
 
 void tmc2209_init(void) {
@@ -322,7 +448,9 @@ static bool selftest_sub_link(uint16_t *outBits) {
     s_stGotReady = false;
     s_stReadyBits[0] = s_stReadyBits[1] = 0;
 
-    while (Serial1.available() > 0) (void)Serial1.read();   // 丢掉开机瞬间的残留
+    // 串口接收已改由中断写环形缓冲，这里从环形缓冲取字节（直接读 Serial1 会读到空）
+    uint8_t drop;
+    while (sub_uart_read_byte(&drop)) { }                  // 丢掉开机瞬间的残留
 
     proto_frame_t ping = {};
     ping.type = CMD_STATUS_QUERY;
@@ -333,7 +461,8 @@ static bool selftest_sub_link(uint16_t *outBits) {
     uint32_t lastPing = t0;
     uint32_t firstFrameMs = 0;
     while ((uint32_t)(millis() - t0) < (uint32_t)SELFTEST_SUB_WAIT_MS) {
-        while (Serial1.available() > 0) proto_rx_feed(&s_stRx, (uint8_t)Serial1.read());
+        uint8_t b;
+        while (sub_uart_read_byte(&b)) proto_rx_feed(&s_stRx, b);
 
         if (s_stGotReady) break;                     // 拿到 EVT_READY：最好情况，直接收工
         if (s_stGotFrame && firstFrameMs == 0) firstFrameMs = millis();
@@ -352,7 +481,8 @@ static bool selftest_sub_link(uint16_t *outBits) {
     if (outBits) *outBits = bits;
 
     if (!s_stGotFrame) {
-        Serial.printf("[ST] sub link  : FAIL - %u ms 内没收到任何帧（查共地 / 接线 / 子板供电）\n",
+        Serial.printf("[ST] sub link  : FAIL - %u ms 内没收到任何帧"
+                      "（查共地 / 接线 / 子板供电；单独测底板可敲 subsim on）\n",
                       (unsigned)SELFTEST_SUB_WAIT_MS);
         return false;
     }

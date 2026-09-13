@@ -19,6 +19,7 @@
 #include "app_config.h"
 #include "itc.h"
 #include "tasks.h"
+#include "tasks_deal.h"
 #include "hardware.h"
 #include "display.h"
 #include "ble_comms.h"
@@ -35,6 +36,12 @@ void setup() {
     display_init();                    // 3：屏幕（含上电自检色块）—— 自检要在屏幕上出结果
     tmc2209_init();                    // 4：底盘步进初始化（函数名沿用早期版本）
     hall_homing();                     // 5
+    // 子板模式：无子板模式（CLI `subsim on` / USE_SUBBOARD=0）下自检的"子板链路"会显示 FAIL，
+    // 这是预期的（本来就没接子板）。先把模式打出来，免得误判。
+    Serial.printf("[BOOT] sub board mode: %s\n",
+                  deal_sim_get_auto()
+                      ? "SIM 无子板模式（底板自己模拟子板事件；subsim off 关闭）"
+                      : "REAL 正常模式（要求子板在线）");
     self_test();                       // 6：外设自检（屏幕汇总 + 底盘微动 + 与子板握手）
     create_all_tasks();                // 7
 

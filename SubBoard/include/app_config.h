@@ -65,7 +65,7 @@
 // 自检里的电机微动要明显短于正常出牌时间，避免真的把牌发出去。
 #define SELFTEST_MOTOR_FWD_MS 150   // 自检正转时长（正常出牌 MOTOR_FWD_MS=390）
 #define SELFTEST_MOTOR_REV_MS 300   // 自检反转时长（把可能被推出去的牌退回）
-#define CAM_CALIB_WAIT_MS     1500  // 发完校准指令后等摄像头回应的时长（也是“先校准、后转电机”的间隔）
+#define CAM_CALIB_WAIT_MS     3000  // 发完校准指令后等摄像头回应的时长（也是“先校准、后转电机”的间隔）
 
 // ===== 串口（与底板通信）=====
 #define SUB_UART_BAUD 115200

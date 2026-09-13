@@ -103,10 +103,14 @@ A5 83 02 <card> <src> <crc8> AA
 
 ## 6. 子板行为小结
 
+> **串口日志约定**：子板把摄像头**发来的整行原文**直接回显（前缀统一 `[CAM] `），
+> 不再打印解码后的 `card/src`——排查时能一眼看到摄像头到底发了什么。
+> 解码结果只进板间协议帧（`EVT_CARD_VALUE` 的 `[card, src]`），不占串口日志。
+
 | 情况 | 子板动作 | 串口打印 |
 |---|---|---|
-| 收到合法 `RESULT:<普通牌>` | 发 `EVT_CARD_VALUE [card, 0]` | `[CAM] result card=<n> src=0` |
-| 收到 `RESULT:UNKNOWN` | 发 `EVT_CARD_VALUE [55, 2]` | `[CAM] result card=55 src=2` |
+| 收到合法 `RESULT:<普通牌>` | 发 `EVT_CARD_VALUE [card, 0]` | `[CAM] RESULT:spade_A`（按收到的原文回显） |
+| 收到 `RESULT:UNKNOWN` | 发 `EVT_CARD_VALUE [55, 2]` | `[CAM] RESULT:UNKNOWN` |
 | 收到 `RESULT:ERROR` | 发 `EVT_ERROR_CAM_FAIL`（底板停机报警） | `[CAM] RESULT:ERROR -> report CAM fail` |
 | 1.2s 内没收到结果 | 由 `CAM_EMPTY_ON_TIMEOUT` 决定：默认发 `[55, 1]` 继续；改为 0 则报 `EVT_ERROR_CAM_FAIL` | `[CAM] timeout -> UNKNOWN src=TIMEOUT (debug)` |
 | 收到不认识的文本 | 丢弃并继续等 | `[CAM] cannot parse: xxx` / `[CAM] ignore line: xxx` |
@@ -123,7 +127,7 @@ CALIBRATE\r\n
 |---|---|
 | 编码 | 纯 ASCII 大写，**CRLF（`\r\n`）结尾** —— 与 `RESULT:...\r\n` 完全同风格 |
 | 串口参数 | 115200，8N1，无流控（与回传一致） |
-| 何时发 | **开机自检时发一次**（子板 `sub_camera_calibrate()`）；CLI `sub selftest` 复检时也会发 |
+| 何时发 | ① **开机自检时发一次**（子板 `sub_camera_calibrate()`）；② 子板串口敲 **`camcalib`** 手动发一次；③ 底板 `sub selftest` / 子板 `selftest` 复检时也会发 |
 | 之后 | 子板等 `CAM_CALIB_WAIT_MS`(1.5s) 收回应；收到任意一行即视为“已回应” |
 | 摄像头建议回 | 成功回一行 `CAL:OK\r\n`（内容不限）；校准失败可回 `RESULT:ERROR\r\n`，子板按“校准失败”处理 |
 
@@ -146,12 +150,35 @@ CALIBRATE\r\n
 要改指令内容，只改子板 `SubBoard/include/app_config.h` 的 `CAM_CMD_CALIBRATE`
 （保持“纯 ASCII + `\r\n` 结尾”即可），并同步摄像头端。
 
+### 7.2 联调用的手动命令（子板串口）
+
+```
+camcalib        # 向摄像头发一次 CALIBRATE，等 1.5s 并打印摄像头回的任何一行
+```
+
+输出示例（摄像头端已实现接收时）：
+
+```
+[CAM] TX cmd (11 bytes): 43 41 4C 49 42 52 41 54 45 0D 0A
+[CAM] calibrate: send command, then wait for reply...
+[CAM] calib rx: CAL:OK
+[CAM] calibrate: reply received
+[CLI] camcalib: camera replied
+```
+
+摄像头端没实现接收时，只会看到 `[CAM] calibrate: no reply ...` 与 `[CLI] camcalib: no reply / error`——
+**这不是子板故障**，是摄像头端还没读 UART。
+
+> 该命令是**阻塞**的（约 `CAM_CALIB_WAIT_MS` = 1.5s），只用于调试；
+> 若当时正好有一个截图会话没结束，子板会先取消它再发校准（避免两种回应混在一起）。
+
 ## 8. 联调建议
 
 1. **先单独测摄像头**：USB-TTL 接 OpenMV 的 P4(TX)，串口助手 115200 看有没有 `RESULT:...`；把 P6 用杜邦线碰一下 GND（制造下降沿）即可触发一次。
-2. **再接子板**：观察子板串口是否打印 `[CAM] result card=...`；没有就查共地和 TX/RX 是否接反。
+2. **再接子板**：观察子板串口是否打印 `[CAM] RESULT:...`（子板直接回显摄像头原文）；没有就查共地和 TX/RX 是否接反。
 3. 子板打印 `cannot parse` → 检查摄像头输出的花色拼写（必须是 `spade/heart/club/diamond`）。
 4. 子板打印 `timeout` → 确认 P6 的下降沿真的产生了（空闲必须是高电平），以及 OpenMV 模板是否加载成功。
 5. 全链路：底板串口应能看到牌面事件，`dealinfo` 里能看到进度推进。
-6. **校准指令**：摄像头端加好接收处理后，子板自检应打印 `[CAM] TX cmd (11 bytes): 43 41 4C 49 42 52 41 54 45 0D 0A`
-   与 `[CAM] calib rx: ...`；底板串口则打印 `SUB-READY: bits=0x....| cam-calib`。
+6. **校准指令**：不用等重启，子板串口敲 `camcalib` 即可手动验证；摄像头端加好接收处理后应打印
+   `[CAM] TX cmd (11 bytes): 43 41 4C 49 42 52 41 54 45 0D 0A` 与 `[CAM] calib rx: ...`。
+   开机自检路径下底板串口则打印 `SUB-READY: bits=0x....| cam-calib`。

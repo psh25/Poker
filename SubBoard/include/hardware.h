@@ -27,6 +27,7 @@ uint32_t sub_photo_stable_ms(void);   // 当前（去抖后）电平已稳定保
 void sub_camera_trigger(void);      // 底板 CMD_CAM_CAPTURE：把 PIN_CAM_TRIG 拉低（非阻塞，脉冲由服务函数收尾）
 void sub_camera_service(void);      // 主循环调用：收脉冲尾、解析回传、上报 EVT_CARD_VALUE
 bool sub_camera_calibrate(uint32_t waitMs);  // 向摄像头发校准指令并等回应；true = 收到回应且非 RESULT:ERROR
+void sub_camera_cancel(void);       // STOP/RESET：终止截图会话（TRIG 回空闲高、丢弃迟到结果）
 
 // ---- 发牌电机（TB6612）----
 void busy_motor_start(void);        // 正转出牌（PWM = MOTOR_DUTY）

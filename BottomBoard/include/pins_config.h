@@ -1,6 +1,6 @@
 #pragma once
 
-/**
+/*
  * 底板 IO 映射 —— 新主控：经典 ESP32 (ESP32 Dev Module / esp32dev)
  * 2026-09-09 由 ESP32-S3 迁移。经典 ESP32 限制：
  *   - GPIO6~11 接内部 Flash，不可用
@@ -10,11 +10,11 @@
  */
 
 // ---- TMC2209 步进驱动（底座转盘；电流由驱动板 VREF 设定，当前固件不用单线 UART）----
-#define PIN_TMC_STEP   16   // 步进脉冲
-#define PIN_TMC_DIR    17   // 方向
+#define PIN_TMC_STEP   27   // 步进脉冲
+#define PIN_TMC_DIR    14   // 方向
 #define PIN_TMC_ENN    26   // 使能（高=断电，低=工作）
-#define PIN_TMC_TX     27   // 【预留】单线 UART 发送（当前固件未用）
-#define PIN_TMC_RX     14   // 【预留】单线 UART 接收（当前固件未用）
+#define PIN_TMC_TX     16   // 【预留】单线 UART 发送（当前固件未用）
+#define PIN_TMC_RX     17   // 【预留】单线 UART 接收（当前固件未用）
 
 // ---- A3144 霍尔零点传感器 ----
 #define PIN_HALL       13   // 必须 INPUT_PULLUP

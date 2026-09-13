@@ -47,7 +47,7 @@ void create_all_tasks(void) {
 
 // ================= 子板通信任务 =================
 void vSubboardTask(void *pv) {
-    // 中(2) | 固定核心 0 | 队列 + 串口中断/轮询
+    // 中(2) | 固定核心 0 | 子板串口中断 + 队列
     proto_frame_t tx;
 
     Serial.println("[CLI] type 'help' for subboard command list");
@@ -55,46 +55,59 @@ void vSubboardTask(void *pv) {
     proto_rx_init(&s_sub_rx, proto_on_event);
 
     for (;;) {
-        // 0) 调试 CLI：读取并执行一行命令（实现在 cli.cpp）
-        cli_poll();
-
-        // 1) 下发指令（20ms 超时后继续处理接收，避免收不到上行）
-        if (xQueueReceive(xSubboardTxQueue, &tx, pdMS_TO_TICKS(20)) == pdPASS) {
+        // 1) 下发指令：队列一到就发；没有指令时最多等 SUB_COMM_POLL_MS，顺便当本任务的节拍
+        if (xQueueReceive(xSubboardTxQueue, &tx, pdMS_TO_TICKS(SUB_COMM_POLL_MS)) == pdPASS) {
             proto_write_frame(&tx);
         }
-        // 2) 接收并解析子板上报（事件由 proto_on_event 分发）
-        while (Serial1.available() > 0) {
-            proto_rx_feed(&s_sub_rx, (uint8_t)Serial1.read());
+        // 2) 接收：子板串口中断已把字节写进环形缓冲（见 hardware.cpp），这里取出来喂协议解析器
+        //    事件由 proto_on_event 分发；掉线判定见 protocol.cpp 的 sub_comm_online()
+        uint8_t b;
+        while (sub_uart_read_byte(&b)) {
+            proto_rx_feed(&s_sub_rx, b);
         }
-        // TODO: 掉线检测：超过 COMM_DEAD_TIMEOUT_MS 无数据 → 通知发牌任务暂停
+        // 3) 调试 CLI：读取并执行一行命令（实现在 cli.cpp）；人输入频率低，挂在本任务节拍上够用
+        cli_poll();
     }
 }
 
 // ================= 编码器处理任务 =================
 void vEncoderTask(void *pv) {
     // 中(2) | 任意核心
-    // 旋转：1ms 轮询 A/B 相做四态正交解码，累计满一整格（4 次有效跳变）才计一步，抗抖动/噪声
-    // 按键：SW 轮询消抖；短按两段式（确认方案 → CONFIRM 发牌）；DEALING 出错短按重置；
-    // GAME_ACTIVE 长按确认结束并直接回 IDLE（短按与屏幕主体预留给后续功能）；
+    // 旋转：A/B 相已在 GPIO 中断里做四态正交解码（见 hardware.cpp），本任务只消费累计格数——
+    //       一次可能拿到多格（转得快时），按净位移更新选中项，不会丢步。
+    // 按键：SW 是慢事件，仍在本任务轮询 + ENCODER_DEBOUNCE_MS 消抖；短按两段式
+    //       （确认方案 → CONFIRM 发牌）；DEALING 出错短按重置；
+    //       GAME_ACTIVE 长按确认结束并直接回 IDLE（短按与屏幕主体预留给后续功能）；
     // 旋转只在 IDLE 生效（切换/取消方案），其他状态旋转无反应
     bool press_active = false;
     uint32_t sw_press_ms = 0;    // 本次按下起始时间（长按判定）
     bool sw_long_done = false;   // 本次按下是否已触发过长按动作
 
-    uint8_t prev_state = 0xFF;   // 上次 A/B 组合状态（A<<1|B）
-    int8_t quad_accum = 0;       // 同方向累计有效跳变（满 ±4 = 一格）
     uint8_t prev_sw = 0xFF;      // SW 状态：0=按下(低)，1=松开
-    uint32_t sw_last_change = 0; // SW 最近一次状态变化时间（10ms 消抖）
+    uint32_t sw_last_change = 0; // SW 最近一次状态变化时间（消抖）
 
-    Serial.printf("[ENC] A=%d B=%d SW=%d\n",
+    Serial.printf("[ENC] A=%d B=%d SW=%d（A/B 走中断，SW 轮询）\n",
                   digitalRead(PIN_ENC_A), digitalRead(PIN_ENC_B),
                   digitalRead(PIN_ENC_SW));
+    encoder_reset_steps();       // 丢弃开机/自检期间的转动
 
     for (;;) {
-        // 1) 轮询按键 SW（10ms 消抖）：按下为低电平
-        uint8_t sw = (digitalRead(PIN_ENC_SW) == LOW) ? 0 : 1;
         uint32_t now_ms = millis();
-        if (sw != prev_sw && (now_ms - sw_last_change) >= 10) {
+
+        // 1) 旋转：消费中断累计的格数（净位移直接作用到选中项；非 IDLE 时只消费不响应）
+        int32_t steps = encoder_take_steps();
+        if (steps != 0 && state_get_current() == STATE_IDLE) {   // 交互仅 IDLE 生效
+            int32_t n = (int32_t)deal_selection_get_scheme() + steps;
+            n %= SCHEME_COUNT;
+            if (n < 0) n += SCHEME_COUNT;
+            Serial.printf("[ENC] rot %+ld sel=%ld\n", (long)steps, (long)n + 1);
+            deal_selection_set_scheme((uint8_t)n);   // 旋转改变选择 → 自动回到未确认
+            display_send_menu();
+        }
+
+        // 2) 轮询按键 SW（ENCODER_DEBOUNCE_MS 消抖）：按下为低电平
+        uint8_t sw = (digitalRead(PIN_ENC_SW) == LOW) ? 0 : 1;
+        if (sw != prev_sw && (uint32_t)(now_ms - sw_last_change) >= (uint32_t)ENCODER_DEBOUNCE_MS) {
             sw_last_change = now_ms;
             prev_sw = sw;
             system_state_t s = state_get_current();
@@ -147,7 +160,7 @@ void vEncoderTask(void *pv) {
             }
         }
 
-        // 1.5) 长按动作：
+        // 3) 长按动作：
         //   IDLE        → 切换发牌方式（顺序 ↔ 随机），屏幕顶部徽标即时更新
         //   GAME_ACTIVE → 确认结束并直接回 IDLE
         if (prev_sw == 0 && !sw_long_done &&
@@ -167,41 +180,8 @@ void vEncoderTask(void *pv) {
             }
         }
 
-        // 2) 1ms 轮询 A/B 相正交解码
-        uint8_t st = (digitalRead(PIN_ENC_A) ? 2 : 0) | (digitalRead(PIN_ENC_B) ? 1 : 0);
-        if (st != prev_state) {
-            if (prev_state != 0xFF) {
-                int8_t d = 0;
-                switch ((prev_state << 2) | st) {
-                    case 0b0001: case 0b0111: case 0b1110: case 0b1000: d = +1; break;
-                    case 0b0010: case 0b0100: case 0b1101: case 0b1011: d = -1; break;
-                    default: quad_accum = 0; break;   // 非法跳变（噪声）→ 清零
-                }
-                quad_accum += d;
-
-                if (quad_accum >= 4) {
-                    quad_accum = 0;
-                    if (state_get_current() == STATE_IDLE) {   // 交互仅 IDLE 生效
-                        uint8_t sel = (uint8_t)((deal_selection_get_scheme() + 1) % SCHEME_COUNT);
-                        Serial.printf("[ENC] rot +1 sel=%d\n", sel + 1);
-                        deal_selection_set_scheme(sel);        // 旋转改变选择 → 自动回到未确认
-                        display_send_menu();
-                    }
-                } else if (quad_accum <= -4) {
-                    quad_accum = 0;
-                    if (state_get_current() == STATE_IDLE) {   // 交互仅 IDLE 生效
-                        uint8_t sel = (uint8_t)((deal_selection_get_scheme() + SCHEME_COUNT - 1) % SCHEME_COUNT);
-                        Serial.printf("[ENC] rot -1 sel=%d\n", sel + 1);
-                        deal_selection_set_scheme(sel);        // 旋转改变选择 → 自动回到未确认
-                        display_send_menu();
-                    }
-                }
-            }
-            prev_state = st;
-        }
-
-        // 3) 让出 CPU（约 1ms 周期）
-        vTaskDelay(pdMS_TO_TICKS(1));
+        // 4) 让出 CPU（约 ENCODER_POLL_MS 周期；A/B 已在中断里解码，不需要 1ms 节拍）
+        vTaskDelay(pdMS_TO_TICKS(ENCODER_POLL_MS));
     }
 }
 

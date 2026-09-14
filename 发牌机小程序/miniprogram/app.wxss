@@ -1,0 +1,63 @@
+/**app.wxss 白色主题、简洁 */
+page {
+  background: #ffffff;
+  color: #222;
+  font-size: 28rpx;
+  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  height: 100%;
+}
+
+/* 通用卡片 */
+.panel {
+  background: #ffffff;
+  border-radius: 20rpx;
+  box-shadow: 0 4rpx 20rpx rgba(0, 0, 0, 0.06);
+  padding: 28rpx;
+  margin: 20rpx 24rpx;
+}
+
+.btn-primary {
+  background: #1f5aff;
+  color: #fff;
+  border-radius: 44rpx;
+  font-size: 30rpx;
+  padding: 20rpx 0;
+}
+.btn-primary[disabled] {
+  background: #c6d4ff;
+  color: #fff;
+}
+.btn-ghost {
+  background: #f5f6fa;
+  color: #333;
+  border-radius: 44rpx;
+  font-size: 30rpx;
+  padding: 20rpx 0;
+}
+
+.title {
+  font-size: 40rpx;
+  font-weight: 600;
+  color: #111;
+}
+.subtitle {
+  font-size: 26rpx;
+  color: #999;
+}
+
+/* 背景花色装饰：扑克本色（红/黑），半透明、置于内容底层 */
+.suit-bg {
+  position: fixed;
+  font-size: 180rpx;
+  pointer-events: none;
+  z-index: -1;
+  line-height: 1;
+}
+.suit-red {
+  color: #e02424;
+  opacity: 0.55;
+}
+.suit-black {
+  color: #151515;
+  opacity: 0.55;
+}

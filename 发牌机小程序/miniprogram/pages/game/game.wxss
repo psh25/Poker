@@ -1,0 +1,94 @@
+.page { position: relative; padding-bottom: 60rpx; }
+.header { padding: 40rpx 40rpx 0; position: relative; z-index: 1; }
+.tabs { display: flex; margin: 24rpx; background: #f5f6fa; border-radius: 40rpx; padding: 8rpx; position: relative; z-index: 1; }
+.tab { flex: 1; text-align: center; padding: 16rpx 0; border-radius: 34rpx; color: #666; font-size: 28rpx; }
+.tab.on { background: #fff; color: #1f5aff; font-weight: 600; box-shadow: 0 2rpx 8rpx rgba(0,0,0,0.06); }
+.big-num { font-size: 120rpx; font-weight: 700; text-align: center; color: #111; }
+.center-tip { text-align: center; color: #999; margin-top: 8rpx; }
+.center-tip.sub { font-size: 22rpx; margin-top: 20rpx; }
+.progress { height: 14rpx; background: #f0f0f0; border-radius: 8rpx; margin-top: 24rpx; overflow: hidden; }
+.bar { height: 100%; background: #1f5aff; border-radius: 8rpx; transition: width .2s; }
+.panel-title { font-weight: 600; margin-bottom: 16rpx; }
+.card-row { display: flex; flex-wrap: wrap; }
+.mini-card { padding: 10rpx 18rpx; background: #fff; border: 2rpx solid #eee; border-radius: 10rpx; margin: 6rpx; font-size: 26rpx; }
+.mini-card.red { color: #d33; }
+.empty { color: #bbb; padding: 20rpx 0; }
+.remain-grid { display: flex; flex-wrap: wrap; }
+.remain-item { width: 20%; box-sizing: border-box; text-align: center; padding: 12rpx 0; border-bottom: 1rpx solid #f4f4f4; }
+.rank { font-size: 26rpx; }
+.cnt { margin-left: 8rpx; color: #1f5aff; font-weight: 600; }
+.pile-input { flex: 1; border: 2rpx solid #e5e5e5; border-radius: 12rpx; padding: 12rpx 20rpx; margin-right: 16rpx; }
+.mini-btn { font-size: 26rpx; line-height: 1; padding: 14rpx 32rpx; border-radius: 30rpx; background: #1f5aff; color: #fff; margin: 0; }
+.hand { display: flex; flex-wrap: wrap; margin: 8rpx 0 24rpx; }
+.hand-card { padding: 14rpx 20rpx; background: #fff; border: 2rpx solid #ddd; border-radius: 10rpx; margin: 8rpx; font-size: 30rpx; }
+.hand-card.red { color: #d33; }
+.hand-card.sel { border-color: #1f5aff; background: #eef3ff; }
+
+/* ---- AI 陪打 ---- */
+.ai-status { text-align: center; font-size: 32rpx; font-weight: 600; color: #1f5aff; padding: 16rpx 0; }
+.ai-status.win { color: #18b566; }
+.ai-status.lose { color: #d33; }
+.ai-info-row { display: flex; justify-content: space-around; background: #f7f8fb; border-radius: 14rpx; padding: 14rpx 0; margin-bottom: 16rpx; }
+.ai-info { font-size: 24rpx; color: #555; }
+.hand-card.off { opacity: 0.5; }
+.sel-tip { font-size: 24rpx; color: #c89000; min-height: 34rpx; margin: 4rpx 0 8rpx; }
+.ai-actions { display: flex; justify-content: space-between; margin-top: 20rpx; }
+.ai-actions button { flex: 1; padding: 16rpx 0; font-size: 26rpx; margin: 0 8rpx; }
+.ai-actions button:first-child { margin-left: 0; }
+.ai-actions button:last-child { margin-right: 0; }
+.ai-log { margin-top: 20rpx; border-top: 2rpx solid #f0f0f0; padding-top: 12rpx; max-height: 360rpx; overflow-y: auto; }
+.log-line { font-size: 24rpx; color: #777; padding: 6rpx 0; border-bottom: 1rpx dashed #f2f2f2; }
+
+/* ---- 线上陪打 ---- */
+.online-role { display: flex; flex-direction: column; }
+.role-btn { border: 2rpx solid #e5e5e5; border-radius: 16rpx; padding: 20rpx; margin-bottom: 16rpx; background: #fff; }
+.role-name { font-weight: 600; }
+.role-desc { font-size: 22rpx; color: #999; margin-top: 6rpx; line-height: 1.5; }
+.online-tip { font-size: 24rpx; color: #c89000; margin: 10rpx 0 6rpx; }
+.online-tip.on { color: #18b566; }
+.room-row { display: flex; align-items: center; justify-content: space-between; margin: 12rpx 0; }
+.room-code { font-size: 32rpx; font-weight: 700; color: #1f5aff; }
+
+.back-row { display: flex; margin: 12rpx 0; }
+
+/* ---- 线上陪打 v2 ---- */
+.back-link { display: inline-block; font-size: 26rpx; color: #999; padding: 6rpx 0; }
+.join-box { padding: 4rpx 0; }
+.field-label { font-size: 24rpx; color: #666; margin-bottom: 8rpx; }
+.pile-input.full { width: 100%; box-sizing: border-box; }
+.members { display: flex; flex-wrap: wrap; align-items: center; margin: 12rpx 0; }
+.members-title { font-size: 26rpx; color: #555; }
+.member-tag { background: #eef3ff; color: #1f5aff; border-radius: 8rpx; padding: 6rpx 14rpx; margin: 4rpx 6rpx 4rpx 0; font-size: 26rpx; }
+.members-empty { font-size: 24rpx; color: #bbb; }
+.feed { margin-top: 16rpx; border-top: 2rpx solid #f0f0f0; padding-top: 10rpx; }
+.feed-title { font-size: 26rpx; font-weight: 600; margin-bottom: 8rpx; }
+.feed-item { font-size: 24rpx; color: #666; padding: 8rpx 0; border-bottom: 1rpx dashed #f0f0f0; }
+
+/* ---- 剩余表格（牌名一行 / 数量一行）---- */
+.remain-head, .remain-body { display: flex; flex-wrap: wrap; }
+.remain-head .rcell { width: 16.66%; box-sizing: border-box; text-align: center; font-size: 24rpx; color: #999; padding: 8rpx 0 2rpx; }
+.remain-body .rcell { width: 16.66%; box-sizing: border-box; text-align: center; font-size: 30rpx; font-weight: 600; color: #1f5aff; padding: 2rpx 0 8rpx; }
+.remain-body .rcell.zero { color: #d5d5d5; font-weight: 400; }
+.mini-card .by { font-size: 20rpx; color: #aaa; margin-left: 6rpx; }
+
+/* ---- 叠牌手牌（露出一条边，看点数/花色）---- */
+.hand-fan { display: flex; flex-wrap: nowrap; overflow-x: auto; padding: 12rpx 4rpx 22rpx; }
+.poker-card { position: relative; flex: 0 0 auto; width: 118rpx; height: 170rpx; background: #fff; border: 2rpx solid #dcdcdc; border-radius: 12rpx; box-shadow: 0 2rpx 6rpx rgba(0,0,0,0.08); margin-left: -80rpx; }
+.poker-card:first-child { margin-left: 0; }
+.poker-card.red .pk-rank, .poker-card.red .pk-suit { color: #d33; }
+.poker-card .pk-corner { position: absolute; left: 6rpx; top: 6rpx; display: flex; flex-direction: column; align-items: flex-start; }
+.pk-rank { font-size: 28rpx; font-weight: 700; line-height: 1; }
+.pk-suit { font-size: 24rpx; line-height: 1.2; margin-top: 4rpx; }
+
+/* ---- 剩余：牌名一行 / 数量一行，6 个一组多行 ---- */
+.rt-group { margin-bottom: 6rpx; }
+.rt-head, .rt-body { display: flex; }
+.rt-head .rcell { width: 16.66%; box-sizing: border-box; text-align: center; font-size: 24rpx; color: #999; padding: 6rpx 0 2rpx; }
+.rt-body .rcell { width: 16.66%; box-sizing: border-box; text-align: center; font-size: 30rpx; font-weight: 600; color: #1f5aff; padding: 0 0 8rpx; }
+.rt-body .rcell.zero { color: #d5d5d5; font-weight: 400; }
+
+/* ---- 记牌多选 ---- */
+.poker-card.sel { border-color: #1f5aff; transform: translateY(-16rpx); box-shadow: 0 6rpx 12rpx rgba(31,90,255,0.25); }
+.pick-row { margin-bottom: 12rpx; }
+.mini-card.pick { cursor: pointer; }
+.mini-card.pick.on { border-color: #1f5aff; background: #eef3ff; }

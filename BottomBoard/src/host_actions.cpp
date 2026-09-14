@@ -78,6 +78,81 @@ void host_notify_state(uint8_t state) {
     host_send(&evt);
 }
 
+// 小程序牌面编码 → 底板 BLE 事件编码。
+// 底板内部 cardCode: A,2,3..K / 小王 / 大王；小程序 rank: 3..15,16,17。
+static void host_card_code_to_suit_rank(uint8_t code, uint8_t *suit, uint8_t *rank) {
+    if (code <= 51) {
+        *suit = (uint8_t)(code / 13);
+        const uint8_t rankIdx = (uint8_t)(code % 13);
+        if (rankIdx == CARD_RANK_A)      *rank = 14;  // A
+        else if (rankIdx == CARD_RANK_2) *rank = 15;  // 2
+        else                              *rank = (uint8_t)(rankIdx + 1); // 3..K
+    } else if (code == CARD_JOKER_SMALL) {
+        *suit = 4; *rank = 16;
+    } else if (code == CARD_JOKER_BIG) {
+        *suit = 4; *rank = 17;
+    } else {
+        *suit = 0xFF; *rank = 0xFF;  // 背面 / 未知
+    }
+}
+
+void host_notify_card(uint16_t idx, uint8_t pile, uint8_t cardCode, uint8_t src) {
+    uint8_t suit = 0xFF;
+    uint8_t rank = 0xFF;
+    host_card_code_to_suit_rank(cardCode, &suit, &rank);
+
+    proto_frame_t evt = {};
+    evt.type = HOST_EVT_CARD;
+    evt.len = 6;
+    evt.data[0] = (uint8_t)(idx & 0xFF);
+    evt.data[1] = (uint8_t)((idx >> 8) & 0xFF);
+    evt.data[2] = pile;
+    evt.data[3] = suit;
+    evt.data[4] = rank;
+    evt.data[5] = (src == CARD_SRC_DEBUG) ? 1 : 0;
+    host_send(&evt);
+}
+
+void host_notify_deal_done(uint16_t total) {
+    proto_frame_t evt = {};
+    evt.type = HOST_EVT_DEAL_DONE;
+    evt.len = 2;
+    evt.data[0] = (uint8_t)(total & 0xFF);
+    evt.data[1] = (uint8_t)((total >> 8) & 0xFF);
+    host_send(&evt);
+}
+
+static void host_action_plan_begin(const uint8_t *data, uint8_t len) {
+    if (state_get_current() != STATE_IDLE || len < 4) return;
+    const uint8_t scheme = data[0];
+    const uint16_t total = (uint16_t)data[1] | ((uint16_t)data[2] << 8);
+    const uint8_t pileCount = data[3];
+    if (!deal_host_plan_begin(scheme, total, pileCount)) {
+        Serial.println("[HOST] plan begin rejected");
+    }
+}
+
+static void host_action_plan_chunk(const uint8_t *data, uint8_t len) {
+    if (state_get_current() != STATE_IDLE || len < 2) return;
+    if (!deal_host_plan_chunk(data[0], &data[1], (uint8_t)(len - 1))) {
+        Serial.println("[HOST] plan chunk rejected");
+    }
+}
+
+static void host_action_plan_commit(void) {
+    if (state_get_current() != STATE_IDLE) return;
+    if (!deal_host_plan_commit()) Serial.println("[HOST] plan commit rejected");
+}
+
+static void host_action_play_text(const uint8_t *data, uint8_t len) {
+    display_cmd_t cmd = {};
+    cmd.type = DISPLAY_CMD_GAME_ACTIVE;
+    uint8_t n = (len < sizeof(cmd.payload.game.cardInfo) - 1)
+                    ? len : (uint8_t)(sizeof(cmd.payload.game.cardInfo) - 1);
+    if (n) memcpy(cmd.payload.game.cardInfo, data, n);
+    cmd.payload.game.cardInfo[n] = '\0';
+    send_display_command(&cmd);
+}
 void host_action_select(uint8_t idx) {
     if (state_get_current() != STATE_IDLE) { Serial.println("[HOST] select: 仅 IDLE 有效"); return; }
     if (idx >= SCHEME_COUNT) { Serial.println("[HOST] select: 越界"); return; }
@@ -104,6 +179,7 @@ void host_action_deal_start(void) {
 
 void host_action_stop(void) {
     motion_abort_request();                               // 立即中止正在执行的发牌/转动
+    deal_host_plan_clear();
     // 停机子板；无子板模式（subsim on / USE_SUBBOARD=0）不下发动作类命令
     if (!deal_sim_get_auto()) proto_send(CMD_STOP, NULL, 0);
     xEventGroupSetBits(xStateEventGroup, BIT_RESET);      // 底板回 IDLE
@@ -111,6 +187,7 @@ void host_action_stop(void) {
 
 void host_action_reset(void) {
     motion_abort_request();                               // 立即中止正在执行的发牌/转动
+    deal_host_plan_clear();
     if (!deal_sim_get_auto()) proto_send(CMD_RESET, NULL, 0);   // 复位子板状态机（无子板模式跳过）
     xEventGroupSetBits(xStateEventGroup, BIT_RESET);      // 底板回 IDLE
 }
@@ -135,6 +212,10 @@ static void host_handle_frame(const proto_frame_t *frame) {
         if (frame->len >= 1) host_action_select(frame->data[0]);
         break;
     case HOST_CMD_CONFIRM_SCHEME: host_action_confirm(); break;
+    case HOST_CMD_PLAY_TEXT:      host_action_play_text(frame->data, frame->len); break;
+    case HOST_CMD_PLAN_BEGIN:     host_action_plan_begin(frame->data, frame->len); break;
+    case HOST_CMD_PLAN_CHUNK:     host_action_plan_chunk(frame->data, frame->len); break;
+    case HOST_CMD_PLAN_COMMIT:    host_action_plan_commit(); break;
     default:
         Serial.printf("[HOST] unknown type=0x%02X\n", frame->type);
         break;

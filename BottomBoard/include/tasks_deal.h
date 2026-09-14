@@ -3,6 +3,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include <stddef.h>
+#include "deal_config.h"
 #include "display.h"    // DEAL_ERROR_MAX
 
 /**
@@ -30,5 +32,12 @@ bool deal_error_active(void);
 // 打开后底板不再依赖子板：跳过"子板不在线"检查、不下发动作类命令，
 // 每张牌的牌面/出牌成功/单张完成都由底板自己按 SIM_* 延时补发模拟事件。
 // 默认值由 app_config.h 的 USE_SUBBOARD 决定；运行时用底板 CLI `subsim on|off` 切换。
+// ---- 小程序上传的发牌计划（逐张目标牌堆序列）----
+// 提交后按 scheme 关联；发牌任务会优先使用与当前方案匹配的上传计划。
+bool deal_host_plan_begin(uint8_t scheme, uint16_t total, uint8_t pileCount);
+bool deal_host_plan_chunk(uint8_t offset, const uint8_t *decks, uint8_t count);
+bool deal_host_plan_commit(void);
+void deal_host_plan_clear(void);
+bool deal_host_plan_copy(deal_plan_t *out, uint8_t scheme);
 void deal_sim_set_auto(bool on);   // 设置无子板模式（函数名沿用早期版本）
 bool deal_sim_get_auto(void);      // 当前是否处于无子板模式

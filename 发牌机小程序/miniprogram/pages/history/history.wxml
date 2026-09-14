@@ -1,0 +1,18 @@
+<view class="page">
+  <view class="suit-bg suit-red" style="right: -30rpx; top: 90rpx; transform: rotate(10deg);">♥</view>
+  <view class="suit-bg suit-black" style="left: -50rpx; bottom: 200rpx; transform: rotate(-14deg); font-size: 200rpx;">♣</view>
+  <view class="suit-bg suit-red" style="left: -20rpx; top: 55%; transform: rotate(-8deg); font-size: 150rpx;">♦</view>
+  <view class="suit-bg suit-black" style="right: -30rpx; bottom: 40rpx; transform: rotate(8deg);">♠</view>
+  <view class="header">
+    <view class="title">历史牌局</view>
+    <view class="subtitle">点击可查看完整记录（仅评审可见）</view>
+  </view>
+  <button wx:if="{{cloudOk}}" class="btn-ghost" bindtap="pullCloud" disabled="{{pulling}}">从云端拉取</button>
+  <view class="list">
+    <view class="item" wx:for="{{list}}" wx:key="id" data-id="{{item.id}}" bindtap="onTap">
+      <view class="i-title">{{item.title}}</view>
+      <view class="i-sub">{{item.time}} · {{item.cards}} 张 · 已打 {{item.played}} 张 · {{item.phase}}</view>
+    </view>
+    <view wx:if="{{!list.length}}" class="empty">还没有牌局记录</view>
+  </view>
+</view>

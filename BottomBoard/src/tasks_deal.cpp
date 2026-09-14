@@ -22,6 +22,7 @@
 #include "protocol.h"
 #include "display.h"
 #include "hardware.h"
+#include "host_actions.h"
 
 // ================= 发牌控制：当前发牌运行状态（发牌任务写，CLI/编码器读）=================
 static uint8_t  s_deal_scheme = 0;            // 当前方案（0-based）
@@ -43,6 +44,98 @@ static bool     s_sim_auto = (USE_SUBBOARD == 0);
 static uint8_t  s_dealt_cards[DEAL_TOTAL_CARDS_MAX][2];
 static uint8_t  s_dealt_lens[DEAL_TOTAL_CARDS_MAX];
 
+// ---- 小程序上传计划（逐张牌堆序列）----
+static uint8_t  s_host_plan_tmp[DEAL_TOTAL_CARDS_MAX];
+static uint16_t s_host_plan_tmp_len = 0;
+static uint16_t s_host_plan_tmp_total = 0;
+static uint8_t  s_host_plan_tmp_scheme = 0xFF;
+static uint8_t  s_host_plan_tmp_piles = 0;
+static deal_plan_t s_host_plan;
+static bool     s_host_plan_valid = false;
+
+bool deal_host_plan_begin(uint8_t scheme, uint16_t total, uint8_t pileCount) {
+    if (scheme >= SCHEME_COUNT || total == 0 || total > DEAL_TOTAL_CARDS_MAX ||
+        pileCount == 0 || pileCount > DECK_COUNT_MAX) return false;
+    xSemaphoreTake(xDeckDataMutex, portMAX_DELAY);
+    s_host_plan_valid = false;
+    s_host_plan_tmp_len = 0;
+    s_host_plan_tmp_total = total;
+    s_host_plan_tmp_scheme = scheme;
+    s_host_plan_tmp_piles = pileCount;
+    xSemaphoreGive(xDeckDataMutex);
+    return true;
+}
+
+bool deal_host_plan_chunk(uint8_t offset, const uint8_t *decks, uint8_t count) {
+    if (!decks || count == 0) return false;
+    xSemaphoreTake(xDeckDataMutex, portMAX_DELAY);
+    bool ok = (offset == s_host_plan_tmp_len) &&
+              ((uint16_t)offset + count <= s_host_plan_tmp_total) &&
+              ((uint16_t)offset + count <= DEAL_TOTAL_CARDS_MAX);
+    for (uint8_t i = 0; ok && i < count; i++) {
+        if (decks[i] >= s_host_plan_tmp_piles) ok = false;
+    }
+    if (ok) {
+        memcpy(&s_host_plan_tmp[offset], decks, count);
+        s_host_plan_tmp_len = (uint16_t)(offset + count);
+    }
+    xSemaphoreGive(xDeckDataMutex);
+    return ok;
+}
+
+bool deal_host_plan_commit(void) {
+    deal_plan_t plan = {};
+    bool ok = false;
+
+    xSemaphoreTake(xDeckDataMutex, portMAX_DELAY);
+    if (s_host_plan_tmp_len == s_host_plan_tmp_total && s_host_plan_tmp_total > 0) {
+        plan.mode = DEAL_MODE_STACKS;
+        strncpy(plan.name, "MiniApp", sizeof(plan.name) - 1);
+        uint16_t i = 0;
+        uint8_t gi = 0;
+        while (i < s_host_plan_tmp_total && gi < DEAL_GROUP_MAX) {
+            const uint8_t deck = s_host_plan_tmp[i];
+            uint16_t run = 1;
+            while (i + run < s_host_plan_tmp_total && s_host_plan_tmp[i + run] == deck) run++;
+            plan.groups[gi].deck = deck;
+            plan.groups[gi].count = (uint8_t)run;
+            snprintf(plan.groups[gi].label, sizeof(plan.groups[gi].label), "P%u", (unsigned)deck + 1);
+            gi++;
+            i = (uint16_t)(i + run);
+        }
+        if (i == s_host_plan_tmp_total) {
+            plan.groupCount = gi;
+            plan.totalCards = s_host_plan_tmp_total;
+            s_host_plan = plan;
+            s_host_plan_valid = true;
+            ok = true;
+        }
+    }
+    xSemaphoreGive(xDeckDataMutex);
+    return ok;
+}
+
+void deal_host_plan_clear(void) {
+    xSemaphoreTake(xDeckDataMutex, portMAX_DELAY);
+    s_host_plan_valid = false;
+    s_host_plan_tmp_len = 0;
+    s_host_plan_tmp_total = 0;
+    s_host_plan_tmp_scheme = 0xFF;
+    s_host_plan_tmp_piles = 0;
+    xSemaphoreGive(xDeckDataMutex);
+}
+
+bool deal_host_plan_copy(deal_plan_t *out, uint8_t scheme) {
+    if (!out) return false;
+    bool ok = false;
+    xSemaphoreTake(xDeckDataMutex, portMAX_DELAY);
+    if (s_host_plan_valid && scheme == s_host_plan_tmp_scheme) {
+        *out = s_host_plan;
+        ok = true;
+    }
+    xSemaphoreGive(xDeckDataMutex);
+    return ok;
+}
 // ================= 发牌控制任务 =================
 bool deal_error_active(void) { return s_deal_error_active; }
 
@@ -181,15 +274,22 @@ void vDealTask(void *pv) {
         s_deal_scheme = deal_selection_get_scheme();
         busy_deal_step("deal_start");
 
-        // 按“方案参数 + 当前发牌方式（顺序/随机）”现场生成计划
-        char perr[48];
-        if (!deal_build_plan(&s_runningPlan, s_deal_scheme,
-                             deal_selection_get_order_random() ? DEAL_ORDER_RANDOM
-                                                        : DEAL_ORDER_SEQUENTIAL,
-                             perr, sizeof(perr))) {
-            deal_add_error(perr);
-            deal_fail();
-            continue;
+        // 优先使用小程序上传的逐张计划；没有匹配计划时再用板端预设生成。
+        if (deal_host_plan_copy(&s_runningPlan, s_deal_scheme)) {
+            Serial.printf("[HOST] use uploaded plan: scheme=%u groups=%u cards=%u\n",
+                          (unsigned)s_deal_scheme,
+                          (unsigned)s_runningPlan.groupCount,
+                          (unsigned)s_runningPlan.totalCards);
+        } else {
+            char perr[48];
+            if (!deal_build_plan(&s_runningPlan, s_deal_scheme,
+                                 deal_selection_get_order_random() ? DEAL_ORDER_RANDOM
+                                                            : DEAL_ORDER_SEQUENTIAL,
+                                 perr, sizeof(perr))) {
+                deal_add_error(perr);
+                deal_fail();
+                continue;
+            }
         }
         const deal_plan_t *plan = &s_runningPlan;
 
@@ -338,6 +438,11 @@ void vDealTask(void *pv) {
                 }
 
                 // 7) 保存牌面数据（摄像头识别结果，[card, src]）
+                uint8_t cardCode = CARD_UNKNOWN;
+                uint8_t cardSrc = CARD_SRC_TIMEOUT;
+                if (face.len >= 1) cardCode = face.data[0];
+                if (face.len >= 2) cardSrc = face.data[1];
+
                 if (dealt < DEAL_TOTAL_CARDS_MAX) {
                     xSemaphoreTake(xDeckDataMutex, portMAX_DELAY);
                     uint8_t n = (face.len < 2) ? face.len : 2;
@@ -346,6 +451,7 @@ void vDealTask(void *pv) {
                     xSemaphoreGive(xDeckDataMutex);
                 }
 
+                host_notify_card(dealt, g->deck, cardCode, cardSrc);
                 dealt++;
                 s_dealt_count = dealt;
                 s_deal_progress = (uint8_t)((uint32_t)dealt * 100U / plan->totalCards);
@@ -362,6 +468,7 @@ void vDealTask(void *pv) {
         }
         s_deal_progress = 100;
         deal_publish_status();
+        host_notify_deal_done(dealt);
         Serial.printf("[GAME] done: %u cards\n", (unsigned)dealt);
 
         // 全部发完 → DEALING → GAME_ACTIVE

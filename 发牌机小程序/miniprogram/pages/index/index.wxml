@@ -1,0 +1,84 @@
+<view class="page">
+  <view class="suit-bg suit-red" style="right: -30rpx; top: 90rpx; transform: rotate(10deg);">♥</view>
+  <view class="suit-bg suit-black" style="left: -50rpx; bottom: 240rpx; transform: rotate(-14deg); font-size: 220rpx;">♠</view>
+  <view class="suit-bg suit-red" style="left: -20rpx; top: 46%; transform: rotate(-8deg); font-size: 150rpx;">♦</view>
+  <view class="suit-bg suit-black" style="right: -30rpx; bottom: 50rpx; transform: rotate(8deg);">♣</view>
+
+  <view class="header">
+    <view class="title">智能发牌机</view>
+    <view class="subtitle">连接底板 · 选择方案 · 自动记牌</view>
+  </view>
+
+  <view class="panel">
+    <view class="row">
+      <text class="lbl">发牌机</text>
+      <text class="state {{bleState === 'connected' ? 'ok' : ''}}">{{bleStateText}}</text>
+      <button wx:if="{{bleState !== 'connected'}}" class="mini-btn" bindtap="startScan">扫描</button>
+      <button wx:else class="mini-btn ghost" bindtap="disconnect">断开</button>
+    </view>
+    <view wx:if="{{bleState === 'connected'}}" class="tip ok">底板：{{boardStateText}}（方案 {{selectedMode + 1}}）</view>
+    <view wx:if="{{showDeviceList}}" class="devlist">
+      <view class="dev-item" wx:for="{{devices}}" wx:key="deviceId" data-id="{{item.deviceId}}" bindtap="onPickDevice">
+        <view class="dev-name">
+          <text>{{item.name}}</text>
+          <text wx:if="{{item.matched}}" class="match-tag">发牌机</text>
+        </view>
+        <text class="rssi">{{item.rssi}} dBm</text>
+      </view>
+      <view wx:if="{{!devices.length && !scanning}}" class="empty">没找到设备？确认底板已上电并广播（DealerBot）</view>
+    </view>
+  </view>
+
+  <view class="panel">
+    <view class="panel-title">发牌模式（完整计划下发）</view>
+    <view class="mode-grid">
+      <view wx:for="{{modes}}" wx:key="id"
+        class="mode-item {{selectedMode === item.id ? 'active' : ''}}"
+        data-id="{{item.id}}" bindtap="onSelectMode">
+        <view class="mode-name">{{item.name}}</view>
+        <view class="mode-desc">{{item.desc}} · {{item.totalCards}} 张 · 方案{{item.id + 1}}</view>
+      </view>
+    </view>
+    <view wx:if="{{selectedMode === 3}}" class="custom-plan">
+      <view class="field-label">按发牌顺序填写目标牌堆（0~3，逗号分隔）</view>
+      <textarea class="plan-input" value="{{customSequenceText}}" bindinput="onCustomSequenceInput"
+        placeholder="例如：0,1,2,3,0,1,2,3" auto-height maxlength="255" cursor-spacing="120"></textarea>
+      <view class="plan-hint">最多 64 张；编号 0、1、2、3 分别代表四个牌堆。</view>
+    </view>
+    <button class="btn-ghost plan-submit" bindtap="sendMode">上传计划并确认（不开始发牌）</button>
+    <view class="tip">上传成功后再点下方“开始发牌”才会执行。</view>
+  </view>
+
+  <!-- 首页逐张显示实际发出的牌面 -->
+  <view class="panel">
+    <view class="panel-title">本次牌面（{{dealtCards.length}} / {{dealTotal || 0}}）</view>
+    <view wx:if="{{dealtCards.length}}" class="dealt-grid">
+      <view wx:for="{{dealtCards}}" wx:key="idx" class="dealt-card {{item.red ? 'red' : ''}} {{item.unknown ? 'unknown' : ''}} {{item.simulated ? 'simulated' : ''}}">
+        <view class="dc-index">#{{item.idx}} · 堆{{item.pile}}</view>
+        <view class="dc-name">{{item.name}}</view><view wx:if="{{item.simulated}}" class="dc-sim">模拟</view>
+      </view>
+    </view>
+    <view wx:else class="empty">开始发牌后，这里会按顺序显示每一张牌</view>
+    <view wx:if="{{lastCardText}}" class="tip ok">最近一张：{{lastCardText}}</view>
+  </view>
+
+  <!-- 发牌进度：点“开始发牌”后本页实时显示，发完出现“去记牌” -->
+  <view wx:if="{{dealing || dealDone}}" class="panel">
+    <view class="panel-title">发牌进度</view>
+    <view class="deal-status {{dealDone ? 'ok' : ''}}">{{dealing ? ('发牌中… 已收到 ' + dealCount + ' 张') : ('整副发完（' + dealTotal + ' 张）')}}</view>
+    <view wx:if="{{dealing}}" class="progress"><view class="bar" style="width:{{dealPercent}}%"></view></view>
+    <button wx:if="{{dealDone}}" class="btn-primary" style="margin-top:8rpx;" bindtap="goCount">去记牌 · 看我的牌</button>
+    <view wx:if="{{dealing}}" class="tip">若一直没动静：先点“复位发牌机”再试。</view>
+  </view>
+
+  <view class="panel">
+    <button class="btn-primary" bindtap="startDeal" disabled="{{bleState !== 'connected' || dealing}}">{{dealing ? '发牌中…' : '开始发牌'}}</button>
+    <view class="row" style="margin-top:16rpx;">
+      <button class="btn-ghost" style="flex:1;" bindtap="resetBoard">复位发牌机</button>
+      <button class="btn-ghost" style="flex:1; margin-left:16rpx;" bindtap="stopBoard">停机/急停</button>
+    </view>
+    <view class="tip">发牌需底板处于“待命(IDLE)”；换局或没反应时先点“复位”。手机上所有模式的牌堆顺序都会先完整下发，再开始发牌。</view>
+    <view wx:if="{{!cloudOk}}" class="tip">当前为本地模式（未配置云环境）</view>
+    <view wx:else class="tip ok">云同步已启用</view>
+  </view>
+</view>

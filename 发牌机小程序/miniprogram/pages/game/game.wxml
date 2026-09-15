@@ -1,0 +1,197 @@
+<view class="page">
+  <view class="suit-bg suit-red" style="right: -40rpx; top: 100rpx; transform: rotate(8deg);">♦</view>
+  <view class="suit-bg suit-black" style="left: -50rpx; bottom: 240rpx; transform: rotate(-12deg); font-size: 210rpx;">♠</view>
+  <view class="suit-bg suit-red" style="left: -20rpx; top: 52%; transform: rotate(-6deg); font-size: 150rpx;">♥</view>
+  <view class="suit-bg suit-black" style="right: -30rpx; bottom: 40rpx; transform: rotate(10deg);">♣</view>
+
+  <view class="header">
+    <view class="title">{{modeName || '未开始'}}</view>
+    <view class="subtitle">已发 {{dealCount}} 张 · 状态 {{phase}}</view>
+  </view>
+
+  <view class="tabs">
+    <view class="tab {{segment==='record'?'on':''}}" data-seg="record" bindtap="switchSegment">发牌</view>
+    <view class="tab {{segment==='count'?'on':''}}" data-seg="count" bindtap="switchSegment">记牌</view>
+    <view class="tab {{segment==='online'?'on':''}}" data-seg="online" bindtap="switchSegment">线上</view>
+    <view class="tab {{segment==='ai'?'on':''}}" data-seg="ai" bindtap="switchSegment">AI</view>
+  </view>
+
+  <!-- 发牌记录：只显示进度，不暴露每张牌属于谁 -->
+  <view wx:if="{{segment==='record'}}" class="panel">
+    <view class="big-num">{{dealCount}}</view>
+    <view class="center-tip">张（{{lastCard || '等待发牌…'}}）</view>
+    <view class="progress"><view class="bar" style="width:{{dealCount>0 ? (dealCount>54?100:dealCount*100/54) : 0}}%"></view></view>
+    <view class="center-tip sub">完整记录保存在本机 / 云端，玩家端不展示他人牌</view>
+  </view>
+
+  <!-- 记牌：我的堆号/我的手牌（叠牌）+ 已打出 + 剩余（牌名上/数量下，多行） -->
+  <view wx:if="{{segment==='count'}}" class="panel">
+    <view class="panel-title">我的堆号（填自己的堆号可看/模拟自己的牌）</view>
+    <view class="row">
+      <input class="pile-input" type="number" value="{{myPileInput}}" bindinput="onMyPileInput" placeholder="例如 0" />
+      <button class="mini-btn" bindtap="applyMyPile">确定</button>
+      <button class="mini-btn ghost" style="margin-left:12rpx;" bindtap="demoDoudizhu">生成斗地主测试牌局</button>
+    </view>
+    <view class="panel-title" style="margin-top:16rpx;">我的手牌{{myPile >= 0 ? '（堆 ' + myPile + '，' + myHand.length + ' 张）' : ''}}</view>
+    <view wx:if="{{myHand.length}}" class="hand hand-fan">
+      <view wx:for="{{myHand}}" wx:key="index" class="poker-card {{item.red ? 'red' : ''}} {{item.selected ? 'sel' : ''}}"
+        data-idx="{{index}}" bindtap="toggleMyCard">
+        <view class="pk-corner">
+          <text class="pk-rank">{{item.rankName || item.name}}</text>
+          <text class="pk-suit">{{item.suitSym}}</text>
+        </view>
+      </view>
+    </view>
+    <view wx:if="{{myPile >= 0 && myHand.length}}" class="tip" style="margin:4rpx 0 8rpx;">点上面的叠牌可多选；也可以点下面的列表多选：</view>
+    <view wx:if="{{myPile >= 0 && myHand.length}}" class="card-row pick-row">
+      <view wx:for="{{myHand}}" wx:key="index" data-idx="{{index}}" bindtap="toggleMyCard"
+        class="mini-card pick {{item.red?'red':''}} {{item.selected?'on':''}}">{{item.name}}</view>
+    </view>
+    <view wx:if="{{!myHand.length}}" class="empty">未设置堆号或该堆暂无牌</view>
+    <button wx:if="{{myPile >= 0 && myHand.length}}" class="btn-primary" style="margin-top:8rpx;" bindtap="simPlayCard">模拟出牌（已选 {{selCount}} 张）</button>
+    <view class="tip">记牌 = 看“外面还剩什么”：整副牌 − 我自己这堆 − 别人已打出的牌。自己出牌不减外面；要看别人出牌对“外面剩余”的影响，把“我的堆号”切到别人那堆观察即可。</view>
+
+    <view class="panel-title" style="margin-top:24rpx;">已打出（{{playedCount}} 张）</view>
+    <view class="card-row">
+      <view wx:for="{{playedRecent}}" wx:key="index" class="mini-card {{item.red?'red':''}}">{{item.name}}<text class="by">{{item.p>=0?'·堆'+item.p:''}}</text></view>
+      <view wx:if="{{!playedRecent.length}}" class="empty">还没有记录</view>
+    </view>
+
+    <view class="panel-title" style="margin-top:24rpx;">{{myPile >= 0 ? ('外面剩余 · 已扣我的堆' + myPile + '与他人打出（' + remainTotal + ' 张）') : ('整副牌分布（设“我的堆号”后显示外面剩余）')}}</view>
+    <view wx:for="{{remainGroups}}" wx:for-item="grp" wx:key="index" class="rt-group">
+      <view class="rt-head">
+        <view class="rcell" wx:for="{{grp}}" wx:key="label">{{item.label}}</view>
+      </view>
+      <view class="rt-body">
+        <view class="rcell {{item.count === 0 ? 'zero' : ''}}" wx:for="{{grp}}" wx:key="label">{{item.count}}</view>
+      </view>
+    </view>
+  </view>
+
+  <!-- 线上：现场开房 / 线上玩家加入 -->
+  <view wx:if="{{segment==='online'}}" class="panel">
+    <view class="panel-title">线上陪打{{online.role === 'host' ? ' · 我是现场（开房）' : online.role === 'guest' ? ' · 我是线上玩家' : ''}}</view>
+    <view wx:if="{{online.role !== ''}}" class="back-link" bindtap="onlineBack">‹ 返回</view>
+
+    <!-- 未选择身份 -->
+    <view wx:if="{{online.role === ''}}" class="online-role">
+      <view class="role-btn" data-role="host" bindtap="onlineChooseRole">
+        <view class="role-name">我是现场（连发牌机）</view>
+        <view class="role-desc">发完牌后开房间；线上玩家加入后会显示成员，其出牌自动上屏并记牌</view>
+      </view>
+      <view class="role-btn" data-role="guest" bindtap="onlineChooseRole">
+        <view class="role-name">我是线上玩家</view>
+        <view class="role-desc">填“房间码 + 我的牌堆号”加入（牌堆号就是你的名字），在线看牌、出牌、看别人出牌</view>
+      </view>
+    </view>
+
+    <!-- 现场(host) -->
+    <block wx:if="{{online.role === 'host'}}">
+      <view wx:if="{{!online.roomCode}}" class="join-box">
+        <view class="field-label">我的堆号（现场这台；认领后别人不能抢）</view>
+        <view class="row">
+          <input class="pile-input" type="number" value="{{myPileInput}}" bindinput="onMyPileInput" placeholder="例如 0" />
+          <button class="mini-btn" bindtap="applyMyPile">确定</button>
+        </view>
+        <view class="tip">让另两台手机加入时各选 0/1/2 中没被占的堆号。</view>
+      </view>
+      <view wx:if="{{!online.roomCode}}" class="btn-primary" bindtap="onlineHostRoom">生成房间码（开始联机）</view>
+      <view wx:if="{{online.roomCode}}" class="room-row">
+        <view class="room-code">房间码 {{online.roomCode}}</view>
+        <button class="mini-btn ghost" bindtap="onlineCloseRoom">关闭</button>
+      </view>
+      <view wx:if="{{online.roomCode}}" class="members">
+        <text class="members-title">房间成员：</text>
+        <block wx:if="{{online.members.length}}">
+          <text class="member-tag" wx:for="{{online.members}}" wx:key="*this">堆{{item}}</text>
+        </block>
+        <text wx:else class="members-empty">还没有线上玩家加入（把房间码告诉对方）</text>
+      </view>
+      <view wx:if="{{online.tip}}" class="online-tip on">{{online.tip}}</view>
+      <view wx:if="{{online.feed.length}}" class="feed">
+        <view class="feed-title">出牌动态</view>
+        <view wx:for="{{online.feed}}" wx:key="id" class="feed-item">{{item.who}} · {{item.text}}</view>
+      </view>
+      <view class="tip">线上玩家出牌会：①显示到底板屏幕 ②记入“已打出/剩余”；现场按编码器记牌也会同步给线上。</view>
+    </block>
+
+    <!-- 线上玩家(guest) -->
+    <block wx:if="{{online.role === 'guest'}}">
+      <!-- 未加入：填 房间码 + 我的牌堆号 -->
+      <view wx:if="{{cloudOk && !online.roomCode}}" class="join-box">
+        <view class="field-label">房间码</view>
+        <input class="pile-input full" type="number" value="{{online.roomInput}}" bindinput="onRoomInput" placeholder="例如 857570" />
+        <view class="field-label" style="margin-top:12rpx;">我的牌堆号（我的名字）</view>
+        <input class="pile-input full" type="number" value="{{online.pileInput}}" bindinput="onOnlinePileInput" placeholder="例如 2" />
+        <button class="btn-primary" style="margin-top:16rpx;" bindtap="onlineJoinRoom">加入房间</button>
+      </view>
+      <view wx:if="{{!cloudOk && !online.roomCode}}" class="tip">未配置云：本地演示模式，直接设堆号出牌（送底板屏幕）。</view>
+
+      <!-- 已加入 -->
+      <block wx:if="{{online.roomCode}}">
+        <view class="online-tip on">房间 {{online.roomCode}} · 我是堆 {{myPile}}</view>
+        <view class="back-link" style="margin-top:0;" bindtap="onlineLeaveRoom">退出房间</view>
+
+        <view class="panel-title" style="margin-top:16rpx;">我的手牌（{{myHand.length}} 张，点牌选中）</view>
+        <view class="hand">
+          <view wx:for="{{myHand}}" wx:key="index"
+            class="hand-card {{item.red?'red':''}} {{item.selected?'sel':''}}"
+            data-idx="{{index}}" bindtap="toggleCard">{{item.name}}</view>
+          <view wx:if="{{!myHand.length}}" class="empty">这堆还没有牌（或已出完）</view>
+        </view>
+        <button class="btn-primary" bindtap="playCards">线上出牌（同步给现场）</button>
+
+        <view wx:if="{{online.feed.length}}" class="feed">
+          <view class="feed-title">出牌动态（含现场两人）</view>
+          <view wx:for="{{online.feed}}" wx:key="id" class="feed-item">{{item.who}} · {{item.text}}</view>
+        </view>
+        <view class="tip">这里实时显示谁出了什么；完整“已打出/剩余”可看上方“记牌”页签。</view>
+      </block>
+    </block>
+  </view>
+
+  <!-- AI：斗地主本地对局演示 -->
+  <view wx:if="{{segment==='ai'}}" class="panel">
+    <view class="panel-title">AI 陪打 · 斗地主（本地演示，无需蓝牙）</view>
+    <view class="ai-status {{ai.winner>=0 ? (ai.winner===0?'win':'lose') : ''}}">{{ai.statusText}}</view>
+
+    <view class="ai-info-row">
+      <view class="ai-info">你（地主）{{ai.hand.length}} 张</view>
+      <view class="ai-info">AI甲 {{ai.aiCounts[1]}} 张</view>
+      <view class="ai-info">AI乙 {{ai.aiCounts[2]}} 张</view>
+    </view>
+
+    <view class="hand">
+      <view wx:for="{{ai.hand}}" wx:key="index"
+        class="hand-card {{item.red?'red':''}} {{item.selected?'sel':''}} {{ai.turn===0 && ai.winner<0 ? '' : 'off'}}"
+        data-idx="{{index}}" bindtap="aiToggleCard">{{item.name}}</view>
+      <view wx:if="{{!ai.hand.length}}" class="empty">还没有开始对局</view>
+    </view>
+    <view class="sel-tip">{{ai.selName || '点牌可组成牌型（用于出牌 / 测试）'}}</view>
+
+    <view class="panel-title" style="margin-top:20rpx;">桌面{{ai.lastPlayName ? '：' + ai.lastPlayName : ''}}</view>
+    <view class="card-row">
+      <view wx:for="{{ai.lastPlayCards}}" wx:key="index" class="mini-card {{item.red?'red':''}}">{{item.name}}</view>
+      <view wx:if="{{!ai.lastPlayCards.length}}" class="empty">（空，等待出牌）</view>
+    </view>
+
+    <view class="panel-title" style="margin-top:20rpx;">底牌（归地主）</view>
+    <view class="card-row">
+      <view wx:for="{{ai.bottom}}" wx:key="index" class="mini-card {{item.red?'red':''}}">{{item.name}}</view>
+    </view>
+
+    <view class="ai-actions" wx:if="{{!ai.running}}">
+      <button class="btn-primary" bindtap="aiStart">开始 AI 对局</button>
+    </view>
+    <view class="ai-actions" wx:else>
+      <button class="btn-primary" bindtap="aiPlaySelected">出牌</button>
+      <button class="btn-ghost" bindtap="aiPass">要不起</button>
+      <button class="btn-ghost" bindtap="aiHint">提示</button>
+      <button class="btn-ghost" bindtap="aiRestart">重开</button>
+    </view>
+
+    <view class="ai-log">
+      <view wx:for="{{ai.log}}" wx:key="index" class="log-line">{{item}}</view>
+    </view>
+  </view>
+</view>

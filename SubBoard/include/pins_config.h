@@ -10,7 +10,7 @@
 //   PWMA = PWM（LEDC 20kHz）；AIN1/AIN2 = 方向；STBY = 高使能
 //   方向（实测本机相反，已对调）：AIN1=0,AIN2=1 → 正转出牌；AIN1=1,AIN2=0 → 反转回退
 //   ⚠️ GPIO5 / GPIO6 在调试台上不可用（见 test1/HARDWARE_NOTES.md）
-#define PIN_MOTOR_PWM        11  // TB6612 PWMA
+#define PIN_MOTOR_PWM        21  // TB6612 PWMA
 #define PIN_MOTOR_AIN1       48  // TB6612 AIN1
 #define PIN_MOTOR_AIN2       47  // TB6612 AIN2
 #define PIN_MOTOR_STBY       45  // TB6612 STBY（高=使能）

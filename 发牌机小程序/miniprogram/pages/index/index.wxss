@@ -1,0 +1,62 @@
+.page { position: relative; padding-bottom: 60rpx; }
+.header { padding: 60rpx 40rpx 10rpx; position: relative; z-index: 1; }
+.row { display: flex; align-items: center; }
+.lbl { font-weight: 600; }
+.state { margin-left: auto; margin-right: 20rpx; color: #999; }
+.state.ok { color: #18b566; }
+.mini-btn { font-size: 24rpx; line-height: 1; padding: 12rpx 28rpx; border-radius: 30rpx; background: #1f5aff; color: #fff; margin: 0; }
+.mini-btn.ghost { background: #eee; color: #333; }
+.devlist { margin-top: 20rpx; max-height: 420rpx; overflow-y: auto; }
+.dev-item { display: flex; justify-content: space-between; padding: 20rpx 8rpx; border-bottom: 1rpx solid #f0f0f0; }
+.rssi { color: #999; }
+.empty { color: #999; padding: 20rpx 8rpx; }
+.panel-title { font-weight: 600; margin-bottom: 16rpx; }
+.mode-grid { display: flex; flex-wrap: wrap; margin-bottom: 16rpx; }
+.mode-item { width: 48%; box-sizing: border-box; border: 2rpx solid #eee; border-radius: 16rpx; padding: 20rpx; margin: 8rpx 1%; }
+.mode-item.active { border-color: #1f5aff; background: #eef3ff; }
+.mode-name { font-weight: 600; }
+.mode-desc { font-size: 22rpx; color: #999; margin-top: 6rpx; }
+.tip { font-size: 22rpx; color: #c89000; margin-top: 16rpx; text-align: center; }
+.tip.ok { color: #18b566; }
+/* 首页：发牌进度 */
+.deal-status { font-size: 30rpx; font-weight: 600; color: #1f5aff; padding: 8rpx 0 4rpx; }
+.deal-status.ok { color: #18b566; }
+
+/* 首页：完整模式计划 */
+.custom-plan {
+  position: relative;
+  z-index: 2;
+  margin: 16rpx 0 32rpx;
+  padding: 22rpx;
+  border: 2rpx solid #dfe6f3;
+  border-radius: 16rpx;
+  background: #f7f8fb;
+}
+.field-label { font-size: 26rpx; font-weight: 600; color: #444; margin-bottom: 14rpx; }
+.plan-input {
+  display: block;
+  width: 100%;
+  min-height: 120rpx;
+  box-sizing: border-box;
+  background: #fff;
+  border: 2rpx solid #cfd9ea;
+  border-radius: 12rpx;
+  padding: 22rpx 24rpx;
+  font-size: 30rpx;
+  line-height: 1.6;
+}
+.plan-input:focus { border-color: #1f5aff; }
+.plan-hint { margin-top: 12rpx; font-size: 22rpx; color: #8a93a5; line-height: 1.5; }
+.plan-submit { position: relative; z-index: 1; margin-top: 4rpx; }
+
+/* 首页：本次发牌逐张牌面 */
+.dealt-grid { display: flex; flex-wrap: wrap; margin: 4rpx -6rpx; }
+.dealt-card { width: calc(33.333% - 12rpx); box-sizing: border-box; margin: 6rpx; padding: 14rpx 8rpx; border: 2rpx solid #e7eaf0; border-radius: 12rpx; background: #fff; text-align: center; }
+.dealt-card.red .dc-name { color: #d33; }
+.dealt-card.unknown { background: #f7f8fb; border-style: dashed; color: #999; }
+.dc-index { font-size: 20rpx; color: #999; margin-bottom: 6rpx; }
+.dc-name { font-size: 30rpx; font-weight: 700; }
+.dealt-card.simulated { border-color: #f0c36a; background: #fffaf0; }
+.dc-sim { margin-top: 4rpx; font-size: 18rpx; color: #c89000; }
+.dev-name { display: flex; align-items: center; }
+.match-tag { margin-left: 10rpx; padding: 2rpx 10rpx; border-radius: 8rpx; background: #e8f7ee; color: #18b566; font-size: 20rpx; }

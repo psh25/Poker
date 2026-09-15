@@ -1,0 +1,8 @@
+.page { position: relative; }
+.header { padding: 40rpx 40rpx 10rpx; position: relative; z-index: 1; }
+.list { padding: 10rpx 24rpx; position: relative; z-index: 1; }
+.item { background: #fff; border-radius: 16rpx; padding: 24rpx; margin-bottom: 16rpx; box-shadow: 0 2rpx 10rpx rgba(0,0,0,0.05); }
+.i-title { font-weight: 600; }
+.i-sub { font-size: 24rpx; color: #999; margin-top: 8rpx; }
+.empty { color: #bbb; text-align: center; padding: 60rpx 0; }
+.btn-ghost { margin: 10rpx 24rpx; }

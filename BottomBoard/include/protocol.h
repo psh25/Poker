@@ -107,11 +107,17 @@ typedef struct {
 typedef enum {
     HOST_CMD_SELECT_SCHEME  = 0x10,  // data[0] = 方案索引 0~SCHEME_COUNT-1
     HOST_CMD_CONFIRM_SCHEME = 0x11,  // 确认当前方案（两段式第一步）
+    HOST_CMD_PLAY_TEXT      = 0x13,  // 线上出牌文本，UTF-8
+    HOST_CMD_PLAN_BEGIN     = 0x14,  // data=[scheme,totalLo,totalHi,pileCount]
+    HOST_CMD_PLAN_CHUNK     = 0x15,  // data=[offset,deckIndex0,deckIndex1,...]
+    HOST_CMD_PLAN_COMMIT    = 0x16,  // 提交完整发牌计划
 } host_cmd_t;
 
 typedef enum {
-    HOST_EVT_ACK   = 0x90,  // data = 原 type + 原 data（调试回执，镜像 EVT_ACK 语义）
-    HOST_EVT_STATE = 0x91,  // data = [state, scheme, confirmed]
+    HOST_EVT_ACK       = 0x90,  // data = 原 type + 原 data（调试回执）
+    HOST_EVT_STATE     = 0x91,  // data = [state, scheme, confirmed]
+    HOST_EVT_CARD      = 0x92,  // data = [idxLo,idxHi,pile,suit,rank,simulated]
+    HOST_EVT_DEAL_DONE = 0x93,  // data = [totalLo,totalHi]
 } host_evt_t;
 
 // ---- 接收解析器（可多实例：Serial1 子板事件 / BLE 主机命令共用同一解析逻辑）----

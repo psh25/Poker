@@ -1,0 +1,32 @@
+{
+  "pages": [
+    "pages/index/index",
+    "pages/game/game",
+    "pages/history/history",
+    "pages/review/review"
+  ],
+  "window": {
+    "navigationBarTextStyle": "black",
+    "navigationBarTitleText": "智能发牌机",
+    "navigationBarBackgroundColor": "#ffffff",
+    "backgroundColor": "#ffffff"
+  },
+  "tabBar": {
+    "color": "#8a8a8a",
+    "selectedColor": "#1f5aff",
+    "backgroundColor": "#ffffff",
+    "borderStyle": "white",
+    "list": [
+      { "pagePath": "pages/index/index", "text": "首页" },
+      { "pagePath": "pages/game/game", "text": "牌局" },
+      { "pagePath": "pages/history/history", "text": "历史" }
+    ]
+  },
+  "style": "v2",
+  "permission": {
+    "scope.userLocation": { "desc": "用于扫描附近的发牌机蓝牙设备" }
+  },
+  "componentFramework": "glass-easel",
+  "lazyCodeLoading": "requiredComponents",
+  "sitemapLocation": "sitemap.json"
+}

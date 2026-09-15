@@ -1,0 +1,29 @@
+<view class="page">
+  <view class="header">
+    <view class="title">{{title}}</view>
+    <view class="subtitle">{{time}} · {{phase}} · 共 {{deck.length}} 张</view>
+  </view>
+  <button wx:if="{{cloudOk && !fromCloud}}" class="btn-ghost" bindtap="syncToCloud">同步到云</button>
+
+  <view class="panel">
+    <view class="panel-title">整副牌顺序（张号 / 堆号 / 牌）</view>
+    <view class="deck-row">
+      <view wx:for="{{deck}}" wx:key="idx" class="mini-card {{item.red?'red':''}}">{{item.idx+1}}.{{item.pile}}.{{item.name}}</view>
+    </view>
+  </view>
+
+  <view class="panel" wx:for="{{piles}}" wx:key="pile" wx:for-item="p">
+    <view class="panel-title">堆 {{p.pile}}（{{p.cards.length}} 张）</view>
+    <view class="card-row">
+      <view wx:for="{{p.cards}}" wx:key="index" wx:for-item="c" class="mini-card">{{c}}</view>
+    </view>
+  </view>
+
+  <view class="panel">
+    <view class="panel-title">回收识别的打出牌（玩家 / 牌）</view>
+    <view class="card-row">
+      <view wx:for="{{played}}" wx:key="index" class="mini-card {{item.red?'red':''}}">P{{item.p}}:{{item.name}}</view>
+      <view wx:if="{{!played.length}}" class="empty">暂无</view>
+    </view>
+  </view>
+</view>

@@ -1,0 +1,9 @@
+.page { padding-bottom: 60rpx; }
+.header { padding: 40rpx 40rpx 10rpx; }
+.btn-ghost { margin: 10rpx 24rpx; }
+.panel-title { font-weight: 600; margin-bottom: 16rpx; }
+.deck-row { display: flex; flex-wrap: wrap; }
+.mini-card { padding: 8rpx 14rpx; background: #fff; border: 2rpx solid #eee; border-radius: 8rpx; margin: 6rpx; font-size: 24rpx; }
+.mini-card.red { color: #d33; }
+.card-row { display: flex; flex-wrap: wrap; }
+.empty { color: #bbb; padding: 16rpx 0; }

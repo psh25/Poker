@@ -151,6 +151,80 @@ static bool rotate_to_deck(uint8_t deck) {
     return chassis_rotate_to_angle(kDeckAngles[deck]);
 }
 
+// ---- 计划游标：按“发牌组列表”的顺序**逐张**给出目标牌堆 ----
+// 顺序/随机模式逐组消耗；分拣模式只有一条 DEAL_FILL_REST 兜底项（一直收）。
+typedef struct {
+    const deal_plan_t *plan;
+    uint8_t  gi;      // 当前组
+    uint16_t left;    // 当前组还剩几张
+} deal_cursor_t;
+
+static void deal_cursor_reset(deal_cursor_t *c, const deal_plan_t *plan) {
+    c->plan = plan;
+    c->gi   = 0;
+    c->left = plan->groupCount ? plan->groups[0].count : 0;
+}
+
+// 取下一个目标牌堆；false = 分配表已填满（这一轮发完）
+static bool deal_cursor_next(deal_cursor_t *c, uint8_t *deck, const char **label) {
+    while (c->gi < c->plan->groupCount) {
+        const deal_group_t *g = &c->plan->groups[c->gi];
+        if (g->count == DEAL_FILL_REST) {          // 兜底堆：一直收，不推进
+            *deck = g->deck;
+            if (label) *label = g->label;
+            return true;
+        }
+        if (c->left == 0) {                        // 本组发完 → 下一组
+            c->gi++;
+            c->left = (c->gi < c->plan->groupCount) ? c->plan->groups[c->gi].count : 0;
+            continue;
+        }
+        c->left--;
+        *deck = g->deck;
+        if (label) *label = g->label;
+        return true;
+    }
+    return false;
+}
+
+// 无子板模式下的模拟牌面：默认 0~51 轮换；若本计划要挑特殊牌，就按
+// “牌源张数 ÷ 特殊牌张数”的间隔插一张对应类别的牌，让分流逻辑也能在没有摄像头时验证。
+static uint8_t deal_sim_face(const deal_plan_t *plan, uint16_t seq) {
+    if (plan->special != SPECIAL_NONE && plan->specialCount > 0) {
+        uint16_t period = plan->sourceCards / plan->specialCount;
+        if (period == 0) period = 1;
+        if ((seq % period) == (uint16_t)(period - 1)) {
+            switch (plan->special) {
+            case SPECIAL_BACK:        return CARD_BACK;
+            case SPECIAL_JQK:         return CARD_CODE(CARD_SUIT_SPADE, CARD_RANK_J);
+            case SPECIAL_JOKER_SMALL: return CARD_JOKER_SMALL;
+            default:                  return CARD_JOKER_BIG;
+            }
+        }
+    }
+    return (uint8_t)(seq % 52);
+}
+
+// 等本张牌的牌面（EVT_CARD_VALUE）。失败时按“牌面超时”收口，返回 false。
+static bool deal_wait_face(proto_frame_t *face, deal_sim_t *sim, bool subSim,
+                           const deal_plan_t *plan, uint16_t seq) {
+    if (subSim) {
+        sim->type = EVT_CARD_VALUE;
+        sim->len = 2;
+        sim->data[0] = deal_sim_face(plan, seq);
+        sim->data[1] = CARD_SRC_DEBUG;             // src 标记为调试/模拟
+        sim->delayMs = SIM_CAMERA_DELAY_MS;
+    }
+    if (!deal_wait_evt_core(xSubboardRxQueue, EVT_CARD_VALUE, CAMERA_TIMEOUT_MS, face,
+                            subSim ? sim : NULL)) {
+        if (motion_abort_requested()) return false;   // STOP/RESET：静默退出
+        deal_add_error("card face timeout");          // 未识别到牌面 → 立即停机
+        deal_fail();
+        return false;
+    }
+    return true;
+}
+
 void vDealTask(void *pv) {
     // 中高(2) | 固定核心 1 | 信号量触发（IDLE 确认 / CLI deal）
     for (;;) {
@@ -243,115 +317,142 @@ void vDealTask(void *pv) {
             continue;
         }
 
-        Serial.printf("[GAME] start %s: %u groups, %u cards\n",
-                      plan->name, (unsigned)plan->groupCount, (unsigned)plan->totalCards);
-
         uint16_t dealt = 0;
+        uint16_t diverted = 0;                 // 被分流到特殊牌堆的张数（收尾核对用）
+        deal_cursor_t cur;
+        deal_cursor_reset(&cur, plan);
 
-        // 按发牌计划逐组执行；每张牌的时序：
-        //   发截图命令 → 转盘到位 → 等牌面(EVT_CARD_VALUE) → 下发发牌
-        //   → 等出牌成功(EVT_CARD_OUT) → 等子板收尾完成(EVT_DEAL_DONE) → 下一张
+        // 推牌次数上限 = 牌源里装的牌数：分拣模式靠它结束，也防“声明张数不符”时死等；
+        // 顺序/随机模式通常先由“分配表填满”结束（顺序模式的弃牌留在牌源）。
+        const uint32_t maxPush = plan->sourceCards
+                                     ? (uint32_t)plan->sourceCards
+                                     : (uint32_t)plan->totalCards + plan->specialCount;
+        // 进度分母：牌局按“要发的张数”，分拣按“牌源张数”
+        const uint16_t denom = (plan->mode == DEAL_MODE_ROUTE) ? plan->sourceCards
+                                                               : plan->totalCards;
+
+        Serial.printf("[GAME] start %s: %u groups, %u cards, source=%u%s\n",
+                      plan->name, (unsigned)plan->groupCount, (unsigned)plan->totalCards,
+                      (unsigned)maxPush, plan->faceBeforeRotate ? ", face-first" : "");
+
+        // 逐张执行；每张牌的时序：
+        //   发截图命令 →（有分流规则时先等牌面定落点）→ 转盘到位 →（其余情况这里等牌面）
+        //   → 下发发牌 → 等出牌成功(EVT_CARD_OUT) → 等子板收尾完成(EVT_DEAL_DONE) → 下一张
         // 等 DEAL_DONE 是为了确保子板已完成 刹车/反转/停顿 回到 IDLE，
         // 否则下一张的 CMD_DEAL_START 可能早到并被子板静默忽略。
-        for (uint8_t gi = 0; gi < plan->groupCount && !s_deal_error_active; gi++) {
+        while (!s_deal_error_active && dealt < maxPush) {
             if (motion_abort_requested()) break;
-            const deal_group_t *g = &plan->groups[gi];
-            s_deal_deck = g->deck;
-            char status[24];
 
-            for (uint8_t k = 0; k < g->count && !s_deal_error_active; k++) {
-                if (motion_abort_requested()) break;
-                proto_frame_t face;
-                deal_sim_t sim = {};
+            // 0) 本张牌的“计划落点”：分配表/填充表的下一个目标
+            uint8_t     dest;
+            const char *label;
+            if (plan->mode == DEAL_MODE_ROUTE) {
+                dest  = plan->groups[0].deck;      // 分拣：未命中规则的牌都进主堆
+                label = plan->groups[0].label;
+            } else if (!deal_cursor_next(&cur, &dest, &label)) {
+                break;                             // 分配表填满 → 本局发完
+            }
 
-                // 1) 底板 → 子板：截图指令（子板把 PIN_CAM_TRIG 拉低一个脉冲）
-                //    无子板模式跳过：没有子板可发，牌面直接由下面的模拟事件给出
-                if (!subSim) {
-                    deal_update_screen("cam capture");
-                    if (!proto_send(CMD_CAM_CAPTURE, NULL, 0)) {
-                        deal_add_error("tx queue full");
-                        deal_fail();
-                        break;
-                    }
-                }
+            char          status[24];
+            proto_frame_t face;
+            deal_sim_t    sim = {};
+            bool          haveFace = false;
 
-                // 2) 转到本张牌对应的实体牌堆（同组后续张 delta=0，立即返回）
-                snprintf(status, sizeof(status), "rotate %s", g->label);
-                deal_update_screen(status);
-                if (!rotate_to_deck(g->deck)) {
-                    if (motion_abort_requested()) break;      // STOP/RESET：静默退出
-                    deal_add_error("chassis rotate timeout");
+            // 1) 底板 → 子板：截图指令（子板把 PIN_CAM_TRIG 拉低一个脉冲）
+            //    无子板模式跳过：没有子板可发，牌面直接由下面的模拟事件给出
+            if (!subSim) {
+                deal_update_screen("cam capture");
+                if (!proto_send(CMD_CAM_CAPTURE, NULL, 0)) {
+                    deal_add_error("tx queue full");
                     deal_fail();
                     break;
                 }
+            }
 
-                // 3) 等待识别完成 → EVT_CARD_VALUE（与其它事件同一个队列）
-                snprintf(status, sizeof(status), "%s face %u/%u",
-                         g->label, (unsigned)k + 1, (unsigned)g->count);
-                deal_update_screen(status);
-                if (subSim) {
-                    sim.type = EVT_CARD_VALUE;
-                    sim.len = 2;
-                    sim.data[0] = (uint8_t)(dealt % 52);   // 模拟牌面：0~51 轮换
-                    sim.data[1] = CARD_SRC_DEBUG;          // src 标记为调试/模拟
-                    sim.delayMs = SIM_CAMERA_DELAY_MS;
+            // 2) 有分流规则时：**先等牌面再转动**（落点由牌面决定，不能先转）
+            if (plan->faceBeforeRotate) {
+                if (!deal_wait_face(&face, &sim, subSim, plan, dealt)) break;
+                haveFace = true;
+                uint8_t card = (face.len >= 1) ? face.data[0] : CARD_UNKNOWN;
+                if (plan->special != SPECIAL_NONE &&
+                    deal_card_is_special(card, plan->special)) {
+                    dest  = plan->specialDeck;     // 命中特殊牌 → 改送专用堆 / 弃牌堆
+                    label = plan->specialLabel;
+                    diverted++;
                 }
-                bool haveFace = deal_wait_evt_core(xSubboardRxQueue, EVT_CARD_VALUE, CAMERA_TIMEOUT_MS,
-                                                   &face, subSim ? &sim : NULL);
-                if (!haveFace) {
-                    if (motion_abort_requested()) break;   // STOP/RESET：静默退出
-                    deal_add_error("card face timeout");   // 未识别到牌面 → 立即停机
+            }
+
+            // 3) 转到目标牌堆（目标堆没变时 chassis_rotate_to_angle 会立即返回）
+            s_deal_deck = dest;
+            snprintf(status, sizeof(status), "rotate %s", label);
+            deal_update_screen(status);
+            if (!rotate_to_deck(dest)) {
+                if (motion_abort_requested()) break;      // STOP/RESET：静默退出
+                deal_add_error("chassis rotate timeout");
+                deal_fail();
+                break;
+            }
+
+            // 4) 没有提前拿牌面的：现在等（这样“截图”与“转动”仍是并行的，省时间）
+            if (!haveFace && !deal_wait_face(&face, &sim, subSim, plan, dealt)) break;
+
+            // 5) 下发子板发牌指令（无子板模式跳过）
+            snprintf(status, sizeof(status), "deal %s %u/%u",
+                     label, (unsigned)dealt + 1, (unsigned)denom);
+            deal_update_screen(status);
+            if (!subSim) {
+                if (!proto_send(CMD_DEAL_START, NULL, 0)) {
+                    deal_add_error("tx queue full");
                     deal_fail();
                     break;
                 }
+            }
 
-                // 4) 下发子板发牌指令（无子板模式跳过）
-                snprintf(status, sizeof(status), "deal %s %u/%u",
-                         g->label, (unsigned)k + 1, (unsigned)g->count);
-                deal_update_screen(status);
-                if (!subSim) {
-                    if (!proto_send(CMD_DEAL_START, NULL, 0)) {
-                        deal_add_error("tx queue full");
-                        deal_fail();
-                        break;
-                    }
-                }
+            // 6) 等待本张牌发出（光电门 EVT_CARD_OUT）
+            if (subSim) { sim.type = EVT_CARD_OUT; sim.len = 0; sim.delayMs = SIM_PHOTO_DELAY_MS; }
+            if (!deal_wait_evt_core(xSubboardRxQueue, EVT_CARD_OUT, PHOTO_TIMEOUT_MS, NULL,
+                                    subSim ? &sim : NULL)) {
+                if (motion_abort_requested()) break;   // STOP/RESET：静默退出
+                deal_add_error("card not out");
+                deal_fail();
+                break;
+            }
 
-                // 5) 等待本张牌发出（光电门 EVT_CARD_OUT）
-                if (subSim) { sim.type = EVT_CARD_OUT; sim.len = 0; sim.delayMs = SIM_PHOTO_DELAY_MS; }
-                if (!deal_wait_evt_core(xSubboardRxQueue, EVT_CARD_OUT, PHOTO_TIMEOUT_MS, NULL,
-                                        subSim ? &sim : NULL)) {
-                    if (motion_abort_requested()) break;   // STOP/RESET：静默退出
-                    deal_add_error("card not out");
-                    deal_fail();
-                    break;
-                }
+            // 7) 等子板收尾完成（刹车/反转/停顿）→ EVT_DEAL_DONE，才允许下一张
+            if (subSim) { sim.type = EVT_DEAL_DONE; sim.len = 0; sim.delayMs = SIM_PHOTO_DELAY_MS; }
+            if (!deal_wait_evt_core(xSubboardRxQueue, EVT_DEAL_DONE, PHOTO_TIMEOUT_MS, NULL,
+                                    subSim ? &sim : NULL)) {
+                if (motion_abort_requested()) break;   // STOP/RESET：静默退出
+                deal_add_error("deal done timeout");
+                deal_fail();
+                break;
+            }
 
-                // 6) 等子板收尾完成（刹车/反转/停顿）→ EVT_DEAL_DONE，才允许下一张
-                if (subSim) { sim.type = EVT_DEAL_DONE; sim.len = 0; sim.delayMs = SIM_PHOTO_DELAY_MS; }
-                if (!deal_wait_evt_core(xSubboardRxQueue, EVT_DEAL_DONE, PHOTO_TIMEOUT_MS, NULL,
-                                        subSim ? &sim : NULL)) {
-                    if (motion_abort_requested()) break;   // STOP/RESET：静默退出
-                    deal_add_error("deal done timeout");
-                    deal_fail();
-                    break;
-                }
+            // 8) 保存牌面数据（摄像头识别结果，[card, src]）
+            if (dealt < DEAL_TOTAL_CARDS_MAX) {
+                xSemaphoreTake(xDeckDataMutex, portMAX_DELAY);
+                uint8_t n = (face.len < 2) ? face.len : 2;
+                if (n) memcpy(s_dealt_cards[dealt], face.data, n);
+                s_dealt_lens[dealt] = n;
+                xSemaphoreGive(xDeckDataMutex);
+            }
 
-                // 7) 保存牌面数据（摄像头识别结果，[card, src]）
-                if (dealt < DEAL_TOTAL_CARDS_MAX) {
-                    xSemaphoreTake(xDeckDataMutex, portMAX_DELAY);
-                    uint8_t n = (face.len < 2) ? face.len : 2;
-                    if (n) memcpy(s_dealt_cards[dealt], face.data, n);
-                    s_dealt_lens[dealt] = n;
-                    xSemaphoreGive(xDeckDataMutex);
-                }
+            dealt++;
+            s_dealt_count = dealt;
+            s_deal_progress = denom ? (uint8_t)((uint32_t)dealt * 100U / denom) : 0;
+            snprintf(status, sizeof(status), "%s %u/%u ok",
+                     label, (unsigned)dealt, (unsigned)denom);
+            deal_update_screen(status);
+        }
 
-                dealt++;
-                s_dealt_count = dealt;
-                s_deal_progress = (uint8_t)((uint32_t)dealt * 100U / plan->totalCards);
-                snprintf(status, sizeof(status), "%s %u/%u ok",
-                         g->label, (unsigned)k + 1, (unsigned)g->count);
-                deal_update_screen(status);
+        // 收尾核对：声明要挑出来的张数 vs 实际分流张数（不一致多半是牌源装错了牌）
+        if (!s_deal_error_active && !motion_abort_requested() && plan->special != SPECIAL_NONE) {
+            Serial.printf("[GAME] divert: %s x%u -> deck%u (%s)\n",
+                          deal_special_name(plan->special), (unsigned)diverted,
+                          (unsigned)plan->specialDeck + 1, plan->specialLabel);
+            if (!subSim && plan->specialCount > 0 && diverted != plan->specialCount) {
+                Serial.printf("[GAME] ! 分流张数与参数不符：声明 %u、实际 %u（检查牌源里装了什么牌）\n",
+                              (unsigned)plan->specialCount, (unsigned)diverted);
             }
         }
 

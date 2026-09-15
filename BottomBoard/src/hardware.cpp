@@ -167,7 +167,6 @@ void init_hardware(void) {
     digitalWrite(PIN_TFT_CS, HIGH);     // 片选默认拉高
 
     // 输入
-    pinMode(PIN_HALL, INPUT_PULLUP);    // 强制上拉（交接指南要求）
     pinMode(PIN_ENC_A, INPUT_PULLUP);
     pinMode(PIN_ENC_B, INPUT_PULLUP);
     pinMode(PIN_ENC_SW, INPUT_PULLUP);
@@ -334,11 +333,7 @@ void self_test(void) {
                   ea, eb, esw);
     s_selftestBits |= BOT_ST_ENC;
 
-    // 3) 霍尔：单次读数只能说明引脚可读，判定极性要拿磁铁靠近（人工项）
-    int hall = digitalRead(PIN_HALL);
-    Serial.printf("[ST] hall     : %d (%s) —— 未进磁场时应为 1；极性需磁铁靠近再看\n",
-                  hall, hall ? "HIGH" : "LOW");
-    s_selftestBits |= BOT_ST_HALL;
+    // 3) 霍尔：已删除该功能
 
     // 4) 蓝牙：ble_init() 已在 setup 里执行（广播已开），手机搜到即算通过
     Serial.printf("[ST] ble      : advertising as '%s'%s\n",
@@ -383,8 +378,7 @@ void selftest_report(void) {
     Serial.println("[ST]   (* = 需人眼/听声确认)");
 
     // 现在就能读的实时状态（复检时不动作、不阻塞）
-    Serial.printf("[ST] live: hall=%d enc A/B/SW=%d/%d/%d ble=%s sub=%s\n",
-                  digitalRead(PIN_HALL),
+    Serial.printf("[ST] live: enc A/B/SW=%d/%d/%d ble=%s sub=%s\n",
                   digitalRead(PIN_ENC_A), digitalRead(PIN_ENC_B), digitalRead(PIN_ENC_SW),
                   ble_connected() ? "connected" : "advertising",
                   sub_comm_online() ? "ONLINE" : "OFFLINE");

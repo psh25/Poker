@@ -35,10 +35,12 @@ static void sub_debug_print_help(void) {
     Serial.println("[CLI] dealstart                    - 启动发牌（模拟 IDLE 确认，配合 sim）");
     Serial.println("[CLI] decks | dealinfo             - 打印牌堆预设 / 发牌进度与错误");
     Serial.println("[CLI] game list | game info        - 列出牌局参数 / 当前计划（按当前发牌方式生成）");
-    Serial.println("[CLI] game use <1-8|name>          - 选择预置牌局（等同 select）");
+    Serial.println("[CLI] game use <1-10|name>         - 选择预置牌局（等同 select）");
     Serial.println("[CLI] game order [seq|rand]        - 查看/设置发牌方式（同 IDLE 长按编码器）");
     Serial.println("[CLI] game custom players=3 hand=17 bottom=3 total=54  - 设 Custom 参数");
     Serial.println("[CLI] game random players=6 hand=2 public=5 total=52  - 同上并切到随机");
+    Serial.println("[CLI]   special=joker:2            - 把 2 张王挑到弃牌堆（张数必须与实际相符）");
+    Serial.println("[CLI]   special 可选 joker|joker_small|joker_big|jqk|back|none（省略 :N 用一副牌默认值）");
     Serial.println("[CLI] stop | reset                  - 停机回 IDLE / 复位（含子板）");
     Serial.println("[CLI] confirm                       - 确认当前方案（两段式第一步）");
     Serial.println("[CLI] subboard                      - 打印子板在线状态与心跳时间");
@@ -195,6 +197,12 @@ static void sub_debug_cli_process(const char *line) {
         Serial.println("[CLI] game list:");
         for (uint8_t i = 0; i < SCHEME_COUNT; i++) {
             const deal_params_t *p = deal_scheme_params(i);
+            if (deal_scheme_is_sort(i)) {
+                Serial.printf("[CLI]  %u) %-10s 分拣（前置工作，不看牌局参数；牌源 %u 张）\n",
+                              (unsigned)i + 1, deal_scheme_name(i),
+                              (unsigned)DEAL_SORT_SOURCE_CARDS);
+                continue;
+            }
             if (i == DEAL_INDEX_ROTATE_TEST) {
                 Serial.printf("[CLI]  %u) %-10s rotate test（只转不发）\n",
                               (unsigned)i + 1, deal_scheme_name(i));
@@ -278,8 +286,27 @@ static void sub_debug_cli_process(const char *line) {
         buf[sizeof(buf) - 1] = '\0';
         for (char *tok = strtok(buf, " \t"); tok; tok = strtok(NULL, " \t")) {
             char key[16] = {0};
+            char sval[20] = {0};
+            if (sscanf(tok, "%15[^=]=%19s", key, sval) != 2) continue;
+
+            // special=<类别>[:<张数>]：把这一类特殊牌挑到弃牌堆（张数必须与实际相符）
+            if (strcmp(key, "special") == 0) {
+                char *colon = strchr(sval, ':');
+                uint8_t cnt = 0;
+                if (colon) { *colon = '\0'; cnt = (uint8_t)atoi(colon + 1); }
+                uint8_t kind = deal_special_from_name(sval);
+                if (kind == SPECIAL_NONE && strcmp(sval, "none") != 0) {
+                    Serial.printf("[CLI] 未知特殊牌类别 '%s'"
+                                  "（joker|joker_small|joker_big|jqk|back|none）\n", sval);
+                    return;
+                }
+                params.special = kind;
+                params.specialCount = cnt ? cnt : deal_special_default_count(kind);
+                continue;
+            }
+
             int val = 0;
-            if (sscanf(tok, "%15[^=]=%d", key, &val) != 2) continue;
+            if (sscanf(sval, "%d", &val) != 1) continue;
             if (val < 0 || val > 255) { Serial.println("[CLI] 参数范围 0~255"); return; }
             if      (strcmp(key, "players") == 0) params.players = (uint8_t)val;
             else if (strcmp(key, "hand") == 0)    params.handCards = (uint8_t)val;
@@ -288,7 +315,10 @@ static void sub_debug_cli_process(const char *line) {
             else if (strcmp(key, "total") == 0) { params.totalCards = (uint16_t)val; totalGiven = true; }
             else { Serial.printf("[CLI] 未知参数 %s\n", key); return; }
         }
-        if (!totalGiven) params.totalCards = deal_params_required(&params);
+        // 没写 total：按“刚好够”算 —— 需要的牌 + 特殊牌张数（特殊牌不参与分配，但要占源里的张数）
+        if (!totalGiven) {
+            params.totalCards = (uint16_t)(deal_params_required(&params) + params.specialCount);
+        }
         if (forceRandom) deal_selection_set_order_random(true);
 
         // 先在临时缓冲里试算：成功才写入 Custom 槽位
@@ -300,10 +330,11 @@ static void sub_debug_cli_process(const char *line) {
 
         *deal_scheme_params_custom() = params;
         host_action_select(DEAL_INDEX_CUSTOM);
-        Serial.printf("[CLI] Custom: %u人x%u 公共%u 底牌%u 总数%u (order=%s)\n",
+        Serial.printf("[CLI] Custom: %u人x%u 公共%u 底牌%u 总数%u special=%s x%u (order=%s)\n",
                       (unsigned)params.players, (unsigned)params.handCards,
                       (unsigned)params.publicCards, (unsigned)params.bottomCards,
                       (unsigned)params.totalCards,
+                      deal_special_name(params.special), (unsigned)params.specialCount,
                       deal_selection_get_order_random() ? "RANDOM" : "SEQUENTIAL");
         deal_plan_print(DEAL_INDEX_CUSTOM, &s_cliPlan, deal_scheme_params_custom());
         return;

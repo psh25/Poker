@@ -13,11 +13,6 @@
 #define PIN_TMC_STEP   27   // 步进脉冲
 #define PIN_TMC_DIR    14   // 方向
 #define PIN_TMC_ENN    26   // 使能（高=断电，低=工作）
-#define PIN_TMC_TX     16   // 【预留】单线 UART 发送（当前固件未用）
-#define PIN_TMC_RX     17   // 【预留】单线 UART 接收（当前固件未用）
-
-// ---- A3144 霍尔零点传感器 ----
-#define PIN_HALL       13   // 必须 INPUT_PULLUP
 
 // ---- EC11 旋转编码器 ----
 #define PIN_ENC_A      25   // A 相（CLK）
@@ -36,7 +31,7 @@
 
 // ---- 滑环串口（与子板通信，2 根线，UART 协议）----
 // ⚠️ NEG(RX)=12 为 strapping 脚（复位需为低）；若接线后无法启动，请把 RX 换到 4/5 等脚
-#define PIN_RING_UART_POS   15   // TX -> 子板 RX
-#define PIN_RING_UART_NEG   12   // RX <- 子板 TX
+#define PIN_RING_UART_POS   17   // TX -> 子板 RX
+#define PIN_RING_UART_NEG   16   // RX <- 子板 TX
 
 // 原 ESP32-S3 的 EXT1~3 预留脚在新板暂不使用，已移除；需要时再按可用 IO 分配。

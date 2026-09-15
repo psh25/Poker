@@ -131,10 +131,10 @@ subsim [on|off]                     # 无子板模式：底板自己模拟子板
 idle | select <n> | dealing <pct>   # 底板屏幕测试
 setstate <idle|dealing|active>      # 强制切换底板状态机（调试）
 game list | game info               # 列出牌局参数 / 当前计划（按当前发牌方式生成）
-game use <1-8|name>                 # 选择预置牌局（斗地主/掼蛋/升级/德州6人/桥牌/测试等）
+game use <1-10|name>                # 选择预置牌局（斗地主/掼蛋/升级/德州6人/桥牌/SortJoker/SortFace/Custom/Test/RotateTest）
 game order [seq|rand]               # 查看/设置发牌方式（同 IDLE 长按编码器）
-game custom players=N hand=N [public=N] [bottom=N] [total=N]   # 设置 Custom 参数
-game random players=N hand=N [public=N] [bottom=N] [total=N]   # 同上并切到随机发牌
+game custom players=N hand=N [public=N] [bottom=N] [total=N] [special=类别[:张数]]  # 设置 Custom 参数
+game random players=N hand=N [public=N] [bottom=N] [total=N] [special=类别[:张数]]  # 同上并切到随机
 ```
 
 - `cmd` / `type` 支持文本别名或 hex：
@@ -159,6 +159,7 @@ sim cardout     → 底板模拟收到光敏事件，触发协议分发
 sub camcapture  → 子板把 PIN_CAM_TRIG 拉低一个脉冲，触发一次摄像头截图
 select 3        → 屏幕高亮方案 3
 game random players=3 hand=17 bottom=3 total=54  → 设 Custom 参数 + 切到随机，选中 Custom
+game custom players=6 hand=2 public=5 total=54 special=joker:2  → 牌源 54 张（含 2 张王）：王进弃牌堆，6 人各 2 张 + 公共 5 张
 game order rand → 只切换发牌方式（等效 IDLE 下长按编码器）
 game info       → 打印当前计划的发牌组（牌堆/张数/标签）
 ```
@@ -230,7 +231,7 @@ help | dealstart | stop | statusquery | selftest | reset | camcapture | camcalib
 | 0x03 | 状态查询（回 0x91） | 无 | `sub statusquery` |
 | 0x04 | 触发子板自检（转发） | 无 | `sub selftest` |
 | 0x05 | 复位：发子板 `CMD_RESET` + 底板回 IDLE | 无 | `reset` |
-| 0x10 | 选择方案（仅 IDLE 有效） | [0]=0~7 | `select N` / `game use N` |
+| 0x10 | 选择方案（仅 IDLE 有效） | [0]=0~9（方案表见 `deal_config.h`） | `select N` / `game use N` |
 | 0x11 | 确认方案（两段式第一步） | 无 | `confirm` |
 
 > 心跳：底板监控任务每 `COMM_HEARTBEAT_MS`（1s）发一次板间 `CMD_STATUS_QUERY`（0x03），

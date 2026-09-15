@@ -27,7 +27,12 @@
 void setup() {
     Serial.begin(115200);              // CH340 调试串口（UART0）
     delay(200);
-    Serial.println("[BOOT] 发牌机底板 v2 框架");
+    // 版本自证：一眼看出板上跑的是哪次构建（排查"改完/烧完没生效"用）
+    //   build  = 编译时刻（__DATE__/__TIME__）
+    //   schemes= 方案表数量：10 = 含 SortJoker/SortFace 的新表；8 = 重排前的旧表
+    Serial.printf("[BOOT] 发牌机底板 v2 框架  build %s %s  schemes=%d (last=%s)\n",
+                  __DATE__, __TIME__, DEAL_PRESET_COUNT,
+                  deal_scheme_name(DEAL_PRESET_COUNT - 1));
 
     init_hardware();                   // 1
     create_itc();                      // 2

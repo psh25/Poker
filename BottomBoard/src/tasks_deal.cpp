@@ -533,7 +533,7 @@ void vDealTask(void *pv) {
             uint8_t cardSrc = CARD_SRC_TIMEOUT;
             if (face.len >= 1) cardCode = face.data[0];
             if (face.len >= 2) cardSrc = face.data[1];
-            
+
             if (dealt < DEAL_TOTAL_CARDS_MAX) {
                 xSemaphoreTake(xDeckDataMutex, portMAX_DELAY);
                 uint8_t n = (face.len < 2) ? face.len : 2;
@@ -542,7 +542,10 @@ void vDealTask(void *pv) {
                 xSemaphoreGive(xDeckDataMutex);
             }
 
-            host_notify_card(dealt, g->deck, cardCode, cardSrc);
+            // 上报给小程序：落点用本张牌**实际**的目标牌堆 dest
+            // （合并前这里写的是旧逐组循环里的 g->deck；那套循环已改为"游标 + 逐张"，
+            //   且命中特殊牌时落点会临时改成专用堆，所以必须用 dest）
+            host_notify_card(dealt, dest, cardCode, cardSrc);
             dealt++;
             s_dealt_count = dealt;
             s_deal_progress = denom ? (uint8_t)((uint32_t)dealt * 100U / denom) : 0;

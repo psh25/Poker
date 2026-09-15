@@ -4,14 +4,21 @@
 
 ## 1. 硬件连接
 
-| 功能 | OpenMV H7 Plus 引脚 | 信号方向 |
-|---|---|---|
-| 识别触发 | P6 | 外部控制器 → OpenMV |
-| UART3 发送 | P4 / TX | OpenMV → 外部控制器 RX |
-| UART3 接收 | P5 / RX | 外部控制器 TX → OpenMV，用于校准命令 |
-| 信号地 | GND | 两块电路板共地 |
+| 功能 | OpenMV H7 Plus 引脚 | ESP32-S3子板引脚 | 信号方向 |
+|---|---|---|---|
+| 识别触发 | P6 | GPIO20 / `PIN_CAM_TRIG` | 子板 → OpenMV |
+| UART3 发送 | P4 / TX | GPIO46 / `PIN_CAM_RX` / Serial2 RX | OpenMV → 子板 |
+| UART3 接收 | P5 / RX | GPIO10 / `PIN_CAM_TX` / Serial2 TX | 子板 → OpenMV，用于校准命令 |
+| 信号地 | GND | GND | 两块电路板共地 |
 
 建议外部控制器使用 3.3 V 逻辑电平。
+
+TX必须接对方RX，不能TX接TX。ESP32-S3的 `Serial2` 与OpenMV的 `UART3`
+是两端各自的硬件编号，不需要相同。
+
+注意：子板当前GPIO20同时是ESP32-S3原生USB的D+。子板代码仅在首次截图时
+将其配置为触发输出，配置后原生USB日志可能中断。相机UART不使用该USB链路；
+联调截图应从子板的CH340/UART0观察日志，不要将USB断连误判为相机UART故障。
 
 UART3 参数：
 
@@ -39,6 +46,9 @@ P6  ─────────┐      ┌────────────�
              └──────┘
               ≥5 ms
 ```
+
+子板当前实际低脉冲为 `CAM_TRIG_PULSE_MS = 200` ms，而不是5 ms。
+5 ms是OpenMV端的最低建议值；更改子板脉冲必须同步核对触发滤波和重新使能时序。
 
 触发规则：
 
@@ -241,6 +251,11 @@ CALIBRATION: {'exposure_us': ..., 'gain_db': ..., 'rgb_gain_db': ...}
 外部控制器建议设置1.2秒的响应超时。如果超时后仍未收到完整的
 `RESULT:...\r\n`，应视为OpenMV通信或运行异常。
 
+当前子板实现的计时起点是**200 ms低脉冲结束、恢复高电平并进入CAM_WAIT时**。
+因此一次截图会话的无结果超时约为 `200 + 1200 = 1400` ms，加上主循环调度误差。
+CAM_PULSE期间不解析相机结果，提前到达的结果保存在Serial2接收缓冲区，进入
+CAM_WAIT后再处理。OpenMV的900 ms处理预算仍从P6下降沿开始，并预留35 ms用于输出。
+
 校准时序：
 
 ```text
@@ -320,3 +335,88 @@ SD卡：
 ```
 
 将项目中的 `main_standalone.py` 复制到OpenMV内部Flash并改名为 `main.py`。
+
+## 11. ESP32-S3子板集成信息
+
+本节根据子板的实际源码核对，不能仅凭 `main.cpp` 中的调用或旧注释推断参数：
+
+- `code/SubBoard/src/main.cpp`：启动时调用硬件初始化和自检；主循环调用
+  `sub_camera_service()`；调试CLI提供 `camcalib`、`camcapture`。
+- `code/SubBoard/include/pins_config.h`：GPIO10/TX、GPIO46/RX、GPIO20/TRIG。
+- `code/SubBoard/include/app_config.h`：波特率、命令、脉冲和超时。
+- `code/SubBoard/src/hardware.cpp`：Serial2初始化、校准收发、截图会话和结果解析。
+- `code/SubBoard/include/protocol.h`：子板向底板转发的牌面编码。
+
+### 11.1 当前参数对照
+
+| 项目 | 子板配置或实现 | OpenMV配置或实现 |
+|---|---|---|
+| 相机UART | Serial2，115200，8N1 | UART3，115200，8N1 |
+| 触发 | GPIO20，空闲高，低脉冲200 ms | P6，下降沿锁存，2 ms滤波 |
+| 结果等待 | 脉冲结束后1200 ms | 下降沿起900 ms预算，输出预留35 ms |
+| 校准指令 | `CALIBRATE\r\n`，11字节 | 按LF分行，移除末尾CR，识别CALIBRATE |
+| 校准等待 | `CAM_CALIB_WAIT_MS = 3000` ms | 自动稳定2000 ms + 应用稳定200 ms + 文件写入/发送 |
+| 接收行上限 | 40字节数组，最多39个正文字符 | 命令正文最多32字节，RX缓冲64字节 |
+| 结果记录 | 解析 `RESULT:<label>` | CRLF结束，UART不发送调试信息 |
+
+`UART_TIMEOUT_MS = 25`是OpenMV端UART读写相关超时，不是相机识别或校准时长。
+最长正常结果 `RESULT:diamond_10\r\n` 为19字节，115200/8N1线上传输约1.65 ms；
+实际调用耗时还包含缓冲、flush和调度，因此识别耗时主要不在UART。
+
+### 11.2 校准与启动注意事项
+
+子板 `sub_camera_calibrate()`会先取消当前截图会话、清空Serial2旧接收数据，
+发送CALIBRATE，然后循环等待完整的3000 ms，**即使提前收到回应也不会提前返回**。
+它将任意非空行（不以 `RESULT:ERROR` 开头）记为收到回应；当前OpenMV正常回复
+`RESULT:CALIBRATED\r\n`，并不回复旧文档举例的 `CAL:OK`。
+
+子板源码和 `code/docs/camera_protocol.md` 中“相机目前不读UART”“等待1.5秒”的
+注释已落后于当前两端实现：本相机程序已经处理CALIBRATE，子板实际等待3秒。
+此处仅记录差异，没有修改ESP32工程。
+
+OpenMV启动需要LED提示、相机初始化和模板加载，而UART没有READY握手。两板同时
+上电时，子板首次自检可能在OpenMV就绪前已经发出CALIBRATE，导致3秒等待仍失败。
+应先让OpenMV启动就绪，再启动子板；或者相机就绪后从子板CLI手动执行 `camcalib`。
+若未来要求同时上电可靠自检，需在两端共同增加READY/重试与命令类型校验，不能只
+给OpenMV额外发送一行READY：当前子板会把任意一行误当校准成功。
+
+### 11.3 识别结果如何转发给底板
+
+相机UART只发送ASCII，**不发送A5/AA二进制帧、不发送CRC、不直接发送牌面编号**。
+子板解析后转成 `EVT_CARD_VALUE = 0x83`，载荷为 `[card, src]`，再通过与底板的
+另一条Serial1链路发送。这与相机Serial2不是同一串口。
+
+| 相机结果 | 子板card | src | 后续行为 |
+|---|---|---|---|
+| spade_A～spade_K | 0～12 | 0 | EVT_CARD_VALUE |
+| heart_A～heart_K | 13～25 | 0 | EVT_CARD_VALUE |
+| club_A～club_K | 26～38 | 0 | EVT_CARD_VALUE |
+| diamond_A～diamond_K | 39～51 | 0 | EVT_CARD_VALUE |
+| joker_small | 52 | 0 | EVT_CARD_VALUE |
+| joker_big | 53 | 0 | EVT_CARD_VALUE |
+| back | 54 | 0 | EVT_CARD_VALUE |
+| UNKNOWN | 55 | 2（低置信度） | EVT_CARD_VALUE，不表示无牌 |
+| ERROR | 不发送牌面编号 | — | EVT_ERROR_CAM_FAIL = 0x87 |
+| 超时，无UART结果 | 55 | 1（超时） | 当前CAM_EMPTY_ON_TIMEOUT=1，仍发EVT_CARD_VALUE |
+
+普通牌编号为 `suit * 13 + rank`，suit顺序为黑桃、红桃、梅花、方块；
+rank顺序为A、2～10、J、Q、K。不要依照相机模板目录顺序生成编号。
+
+子板STOP/RESET只取消子板等待并丢弃当时的旧数据，没有向相机发送UART取消指令。
+相机仍可能完成并发送旧结果。因为协议没有请求序号，取消后不要立即开始下一次
+识别，应等待相机原会话结束后再触发，避免迟到结果混入新会话。
+
+### 11.4 最小联调步骤
+
+1. 连接P4→GPIO46、P5←GPIO10、P6←GPIO20和GND。保持P6空闲高。
+2. 在OpenMV上运行当前 `main_standalone.py`，确认USB端出现READY；不要部署
+   没有UART的 `recognize_cards_hybrid.py` 代替它。
+3. 使用子板CH340调试串口，波特率115200，输入 `camcalib` 并以换行结束。
+4. 子板应打印发送字节 `43 41 4C 49 42 52 41 54 45 0D 0A`，随后打印
+   `[CAM] calib rx: RESULT:CALIBRATED` 和 `[CLI] camcalib: camera replied`。
+5. 将牌放稳，输入 `camcapture`。该CLI命令在子板内部注入CMD_CAM_CAPTURE，
+   然后由GPIO触发相机；**不是通过UART向相机发送字符串camcapture**。
+6. 子板应出现 `[CAM] RESULT:heart_A` 等结果，底板收到0x83牌面事件。
+7. 若只有 `[CAM] timeout -> UNKNOWN src=TIMEOUT (debug)`，先核对OpenMV USB
+   是否产生同次RESULT，再查P6触发、共地、P4→GPIO46和两端波特率；不要将
+   子板的超时兜底误认为相机识别成功。

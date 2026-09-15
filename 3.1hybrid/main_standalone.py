@@ -24,6 +24,10 @@ TRIGGER_FILTER_MS = 2
 REARM_HIGH_MS = 5
 
 UART_ID = 3
+# ESP32-S3 子板使用 Serial2：GPIO46/RX <- OpenMV P4/TX，
+# GPIO10/TX -> OpenMV P5/RX；两板必须共地，使用3.3 V逻辑。
+# 子板GPIO20 -> P6，空闲高、低脉冲200 ms；GPIO20与子板原生USB D+冲突。
+# 参数依据 SubBoard/include/{app_config.h,pins_config.h}，详见通信协议文档。
 UART_BAUD = 115200
 UART_TIMEOUT_MS = 25
 UART_RX_BUFFER_BYTES = 64
@@ -33,6 +37,8 @@ BOOT_LED_MS = 1000
 CAPTURE_LED_PRELIGHT_MS = 35
 
 RESULT_BUDGET_MS = 900
+# 子板在200 ms触发脉冲结束后才开始1200 ms结果等待计时；
+# 本程序900 ms预算仍从P6下降沿计算，二者并非同一个计时起点。
 OUTPUT_RESERVE_MS = 35
 STRICT_TEMPLATE_COVERAGE = True
 MAX_TEMPLATES_PER_LABEL = 2

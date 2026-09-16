@@ -33,6 +33,15 @@ uint16_t selftest_bits(void); // 最近一次自检结果位图（BOT_ST_*）
 
 bool chassis_rotate_to_angle(int16_t angleDeg);  // 底盘转盘转到指定角度（0~359°），true=到位
 bool chassis_rotate_turns(int32_t turns);        // 底盘沿同一方向连续转 turns 圈（顶层圈数），true=到位
+bool chassis_at_angle(int16_t angleDeg);         // 转盘当前是否已停在该角度上（按电机步数判断，容差 CHASSIS_AT_TOL_STEPS）
+
+// ---- 低功耗（A 级，见 app_config.h）----
+// 底盘驱动：不锁轴的时段（IDLE 空闲 / GAME_ACTIVE）断电；DEALING 期间保持使能锁轴。
+void chassis_enable_driver(void);    // 使能底盘驱动（EN 拉低 + CHASSIS_SETTLE_MS 稳定等待，会阻塞）
+bool chassis_driver_enabled(void);   // 当前 EN 是否使能（锁轴中）
+void chassis_power_release(void);    // 断开底盘驱动（EN 拉高，绕组断电，不锁轴）
+void power_set_cpu(uint32_t mhz);    // 设置 CPU 主频（0 或相同值 = 不动）
+void power_manage_tick(void);        // 低功耗巡检（由 busy_monitor 每 MONITOR_PERIOD_MS 调用）
 
 // ---- 中止请求（STOP/RESET 用；底盘运动循环与发牌任务都会尽早退出）----
 // 带"代次"防竞态：STOP/RESET 递增代次；发牌任务先采样代次、只有代次没变才允许清除标志，

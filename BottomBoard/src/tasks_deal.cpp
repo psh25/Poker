@@ -239,6 +239,12 @@ static bool deal_wait_evt_core(QueueHandle_t q, uint8_t want, uint32_t timeoutMs
 
 // 底盘转盘转到目标牌堆（AccelStepper 实际转动；超时返回 false）
 static bool rotate_to_deck(uint8_t deck) {
+    // 已经停在这个牌堆的角度上：不调用转动、不打 [STEP] 日志、不用等任何稳定时间。
+    // 随机发牌的"同一组内连发多张"、顺序发牌的同堆相邻张都是这种情况。
+    if (chassis_at_angle(kDeckAngles[deck])) {
+        Serial.printf("[DEAL] deck %u: already there, skip rotate\n", (unsigned)deck + 1);
+        return true;
+    }
     Serial.printf("[DEAL] rotate to deck %u (angle %d deg)\n",
                   deck + 1, (int)kDeckAngles[deck]);
     return chassis_rotate_to_angle(kDeckAngles[deck]);
@@ -391,6 +397,14 @@ void vDealTask(void *pv) {
             continue;
         }
         if (subSim) Serial.println("[SIM] 无子板模式：底板自己模拟子板事件（subsim off 关闭）");
+
+        // 本局开始统一使能底盘驱动（低功耗 A 级：驱动断电只发生在 IDLE 空闲 / GAME_ACTIVE）。
+        // 为什么不只靠 chassis_run_relative() 里"按需使能"：
+        //   若本局第一张牌恰好不用转动（chassis_at_angle() 命中、rotate_to_deck 直接跳过），
+        //   按需使能的路径根本不会被走到，那一整局转盘都是自由的——推牌的反作用力会把它顶偏，
+        //   而软件位置没变，后面的牌就全落错堆了。
+        // 代价：每局一次 CHASSIS_SETTLE_MS(500ms) 稳定等待；驱动本来已使能时立即返回、不重复等待。
+        chassis_enable_driver();
 
         // 旋转测试：不发牌，底盘连续转若干圈后自动回 IDLE
         if (plan->mode == DEAL_MODE_ROTATE_TEST) {

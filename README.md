@@ -116,12 +116,12 @@ DealerMachine/
 - [x] 参数驱动自定义牌局（8 个牌堆位；预置斗地主/掼蛋/升级/德州6人/桥牌/测试 + Custom）
 - [x] 发牌方案扩展（v3.8）：**特殊牌分流**（按牌面把已知张数的特殊牌送弃牌堆，不占分配表名额）+ **分拣方案**（SortJoker / SortFace，发完牌源按牌面分堆）+ **方案表重排**（真实牌局 → 分拣 → Custom → 测试方案永远最后，`static_assert` 守护）
 - [x] 随机发牌（与顺序发牌互斥；硬件随机数洗牌 → 无序转堆；弃牌堆处理）
-- [x] 摄像头截图触发时序（底板控制 `CMD_CAM_CAPTURE` → 子板把 `PIN_CAM_TRIG` **拉低**一个脉冲，OpenMV P6 下降沿触发）
+- [x] 摄像头截图触发时序（底板控制 `CMD_CAM_CAPTURE` → 子板把 `PIN_CAM_TRIG`（**GPIO4**，v4.0 由 GPIO20 改来）**拉低**一个脉冲，OpenMV P6 下降沿触发）
 - [x] 摄像头回传接收（子板在截图等待窗口内轮询 `Serial2`，解析 OpenMV `RESULT:<结果>` 文本行 → 翻译成牌面编码 → `EVT_CARD_VALUE`）
 - [x] 摄像头调试可观测性：子板串口**原样回显**摄像头发来的整行文本（前缀 `[CAM] `，不打印解码后的 card/src）；新增子板本地命令 `camcalib`（向摄像头发 `CALIBRATE\r\n` 并打印回应，阻塞 ~1.5s）
 - [x] 子板心跳与掉线检测（`CMD_STATUS_QUERY` / `EVT_STATUS`）
 - [ ] SD 卡驱动（SdFat，与屏幕共用 SPI 的片选互斥）
-- [x] 底板 CLI 调试（sub / sim / **subsim** / setstate / selftest / 屏幕测试）
+- [x] 底板 CLI 调试（sub / sim / **subsim** / setstate / **power** / selftest / 屏幕测试）
 - [x] **无子板模式**：`subsim on|off`（旧别名 `simauto`）+ 编译期 `USE_SUBBOARD`；跳过子板在线检查、不下发动作类命令，底板自模拟牌面/出牌/收尾事件 → 可单独调试底板（任意方案）
 - [x] **开机自检（底板）**：编码器/Hall 引脚电平、BLE 广播、与子板串口握手（自动判定）+ 屏幕色块、底盘微动 ±3°（人眼/听声确认）；结果位图 `BOT_ST_*` + 串口打印 + 屏幕汇总；CLI `selftest` 可复检
 - [x] **开机自检（子板）**：光电门电平 → **摄像头校准指令**（`CALIBRATE\r\n`）→ 电机微动（正转仅 150ms，不会真的发牌）→ 复查光电门 → 查与底板串口；`EVT_READY` 携带 2 字节位图 `SUB_ST_*`
@@ -130,6 +130,7 @@ DealerMachine/
 - [x] **光电门判定改造**：单张动作改为固定时长（正转 `MOTOR_FWD_MS` → 刹车 → 反转 → 停顿），**动作期间只记录**光门电平，动作结束后统一判定 成功发出 / 卡在出牌口 / 根本没出去；两种失败沿用"反转撤回 → 重试一次 → 报 `EVT_ERROR_CARD_JAM`"
 - [ ] 摄像头端加 UART 命令接收（`CALIBRATE\r\n`）——加好后自检的摄像头校准才会真正生效（详见 `docs/camera_protocol.md` 第 7 节）
 - [ ] 交互式复检模式（转/按编码器、手转电机试锁轴力矩、拿磁铁试霍尔）——需要人工配合，未纳入开机自检
+- [x] **低功耗（A 级）**：① 底盘步进在**不锁轴的时段**断电（IDLE 空闲 / GAME_ACTIVE；**DEALING 仍保持锁轴**，否则推牌反作用力会把转盘顶偏），CLI `power` / `power motor on|off` 可查看与强制；② CPU 按状态降频（IDLE 且蓝牙未连接 → 80MHz，其余 → 240MHz）；③ 蓝牙控制器休眠 + 广播间隔放宽到 100ms（库默认 20ms）；④ 子板：主循环 1ms 节拍 + CPU 80MHz + 发牌电机 STBY 待机。**不改任何 ms 级时序**——经典 ESP32 与 ESP32-S3 的 APB 在降频后仍是 80MHz，UART / SPI / LEDC PWM 时基不变（论证见 `docs/architecture_v2.md` v4.0 与 `docs/subboard_architecture.md` 第十一章）
 - [x] 底板 BLE 基础（NUS 收命令帧/发状态帧，帧格式与板间一致）
 - [ ] 小程序端联调（连接、帧收发 UI）
 - [x] 子板 `SubBoard/` PlatformIO 项目（裸机状态机 + 串口协议）

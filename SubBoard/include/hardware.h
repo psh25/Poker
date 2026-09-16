@@ -11,6 +11,7 @@
 void sub_hardware_init(void);
 void sub_self_test(void);          // 上电自检 → 上报 EVT_READY（data = 2 字节结果位图 SUB_ST_*）
 uint16_t sub_selftest_bits(void);  // 最近一次自检结果位图（SUB_ST_*，见 protocol.h）
+void sub_power_setup(void);        // 低功耗（A 级）：CPU 降频 + 电机驱动待机（在 setup() 末尾调用）
 
 // 串口接收：中断回调 → 环形缓冲；主循环通过 sub_uart_read_byte 取字节
 void sub_uart_rx_isr(void);
@@ -33,7 +34,7 @@ void sub_camera_cancel(void);       // STOP/RESET：终止截图会话（TRIG �
 void busy_motor_start(void);        // 正转出牌（PWM = MOTOR_DUTY）
 void busy_motor_start_reverse(void);// 反转回退（PWM = MOTOR_REV_DUTY，摄像头拍牌底）
 void busy_motor_brake(void);        // 短刹车（AIN1=AIN2=高，PWM=0）
-void busy_motor_stop(void);         // 停止（滑行）
+void busy_motor_stop(void);         // 停止并进待机（滑行 + STBY 拉低，输出关断）
 void motor_self_test(void);         // 电机自检：微动正转（SELFTEST_MOTOR_FWD_MS）+ 反转（SELFTEST_MOTOR_REV_MS）
 
 // ---- 占位函数（TODO：按架构实现具体逻辑）----

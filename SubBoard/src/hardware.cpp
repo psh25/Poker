@@ -90,7 +90,9 @@ void sub_hardware_init(void) {
     pinMode(PIN_MOTOR_AIN1, OUTPUT);
     pinMode(PIN_MOTOR_AIN2, OUTPUT);
     pinMode(PIN_MOTOR_STBY, OUTPUT);
-    digitalWrite(PIN_MOTOR_STBY, HIGH);   // 使能（保持高，便于随时启动）
+    // 待机：STBY 拉低 = 输出关断（TB6612 待机电流 µA 级，见 app_config.h 低功耗一节）。
+    // 要驱动时由 busy_motor_* 先拉高使能，停稳后 busy_motor_stop() 再拉回低。
+    digitalWrite(PIN_MOTOR_STBY, LOW);
     digitalWrite(PIN_MOTOR_AIN1, LOW);
     digitalWrite(PIN_MOTOR_AIN2, LOW);
     ledcSetup(MOTOR_PWM_CH, MOTOR_PWM_FREQ, MOTOR_PWM_BITS);
@@ -101,8 +103,8 @@ void sub_hardware_init(void) {
     sub_photo_init();
 
     // 摄像头：这里的初始化已挪到 sub_camera_trigger()（首次触发时才配置）。
-    // 原因：PIN_CAM_TRIG = GPIO20 是 ESP32-S3 原生 USB 的 D+，
-    //       开机就把它配成输出会破坏原生 USB 口。平时不碰，避免影响开机自检。
+    // 原因：TRIG 只在真正截图时才有用，平时保持高阻，免得开机就给摄像头发假触发。
+    //       （TRIG 已从 GPIO20 换到 GPIO4，见 pins_config.h。）
 
     // 与底板通信串口（2 线 UART）
     Serial1.begin(SUB_UART_BAUD, SERIAL_8N1, SUB_UART_RX_PIN, SUB_UART_TX_PIN);
@@ -174,8 +176,7 @@ static void cam_ensure_uart(void) {
 }
 
 // TRIG 脚：只在真正要截图时才配置成输出。
-// 原因（见 pins_config.h）：PIN_CAM_TRIG = GPIO20 是 ESP32-S3 原生 USB 的 D+，
-// 一旦配成输出，原生 USB 串口日志就不可用（得从 CH340 口看日志）。
+// 原因：浪费一个输出没有意义，而且开机就配成输出可能给摄像头发一个假触发。
 // 所以开机自检里**不碰**这个脚——发校准指令只需要 UART。
 static void cam_ensure_trig(void) {
     if (s_cam_trig_inited) return;
@@ -193,7 +194,7 @@ void sub_camera_trigger(void) {
         return;
     }
     cam_ensure_uart();
-    cam_ensure_trig();                        // 首次触发才把 GPIO20 配成输出
+    cam_ensure_trig();                        // 首次触发才把 PIN_CAM_TRIG 配成输出
     // 清掉上一次残留：迟到的旧结果不能被当成这一次的识别结果
     while (Serial2.available() > 0) (void)Serial2.read();
 
@@ -434,10 +435,12 @@ void busy_motor_brake(void) {
 }
 
 void busy_motor_stop(void) {
-    // 停止：AIN1/2 全低 = 滑行（自然停）；如需立即停可改 AIN1/2 全高 = 短刹车
+    // 停止 + 进待机：先 AIN1/2 全低、PWM=0（滑行自然停），再把 STBY 拉低关断输出。
+    // 停机后驱动完全不受控于电机（TB6612 待机电流 µA 级）；下一次 busy_motor_* 会重新拉高 STBY。
     digitalWrite(PIN_MOTOR_AIN1, LOW);
     digitalWrite(PIN_MOTOR_AIN2, LOW);
     ledcWrite(MOTOR_PWM_CH, 0);
+    digitalWrite(PIN_MOTOR_STBY, LOW);
 }
 
 // 电机自检：微动正转 SELFTEST_MOTOR_FWD_MS → 刹车 MOTOR_BRAKE_MS → 反转 SELFTEST_MOTOR_REV_MS → 停
@@ -525,6 +528,28 @@ void busy_error_handle(uint8_t errorType) {
     (void)errorType;
 }
 
-
-
-
+// ================= 低功耗（A 级）=================
+// 上电流程里最后调用：CPU 降频 + 打印电机待机状态（STBY 已在 sub_hardware_init 拉低）。
+//
+// 时序安全性（这是低功耗改动最需要确认的一点）：
+//   ESP32-S3 的 APB 时钟恒为 80MHz —— Arduino 核心的 calculateApb() 对 S3 直接返回 APB_CLK_FREQ，
+//   所以 240MHz→80MHz 只改 CPU 分频，APB 不变。挂 APB 的外设全部不受影响：
+//     - UART：115200 波特率由 APB 分频得到 → 不变（子板↔底板、子板↔摄像头都是 115200）
+//     - LEDC(PWM)：20kHz / 8bit 由 APB 分频得到 → 占空比与频率不变（发牌电机转速不变）
+//   millis()/delay() 走 systimer + FreeRTOS tick（与 CPU 频率无关）→ 所有 ms 级时序不变：
+//     触发脉冲 CAM_TRIG_PULSE_MS、出牌动作 MOTOR_FWD_MS/BRAKE/REV/PAUSE、光电门去抖
+//     PHOTO_DEBOUNCE_MS、摄像头等待 CAM_RESULT_TIMEOUT_MS 全部照旧。
+//   结论：降频不会引入时序错误；它只让"同样的代码跑得慢一点"，而这份负载本来就很轻。
+void sub_power_setup(void) {
+    uint32_t cpuBefore = getCpuFrequencyMhz();
+#if SUB_CPU_MHZ > 0
+    bool ok = setCpuFrequencyMhz(SUB_CPU_MHZ);
+    dbg_printf("[PWR] cpu %u -> %u MHz (%s), apb %u MHz\n",
+               (unsigned)cpuBefore, (unsigned)getCpuFrequencyMhz(), ok ? "ok" : "FAILED",
+               (unsigned)(getApbFrequency() / 1000000UL));
+    dbg_println("[PWR] apb unchanged -> uart 115200 / pwm 20kHz / all ms timings unchanged");
+#else
+    dbg_printf("[PWR] cpu stay at %u MHz (SUB_CPU_MHZ=0, 降频已关闭)\n", (unsigned)cpuBefore);
+#endif
+    dbg_println("[PWR] motor driver standby (STBY=LOW) until next deal action");
+}

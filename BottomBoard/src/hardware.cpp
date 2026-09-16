@@ -17,6 +17,7 @@
 #include "protocol.h"
 #include "display.h"
 #include "ble_comms.h"
+#include "state_machine.h"
 
 // ---- 底盘步进（AccelStepper，参考 重要信息/步进电机/main.cpp）----
 static AccelStepper g_chassis(AccelStepper::DRIVER, PIN_TMC_STEP, PIN_TMC_DIR);
@@ -29,8 +30,10 @@ static constexpr long kStepsPerTopRev = (long)(
         (double)CHASSIS_GEAR_DEN + 0.5);
 
 // 参考 main.cpp：首次使能后等待驱动稳定，之后一直保持使能（锁轴），
-// 只有超时/故障才 disableOutputs() 并把该标志复位。
+// 超时/故障、以及"不锁轴的时段"（IDLE 空闲 / GAME_ACTIVE）都会 disableOutputs() 并把该标志复位。
 static bool s_driverEnabled = false;
+// 最后一次转动结束的时刻（IDLE 空闲断电判定用；见 power_manage_tick）
+static uint32_t s_lastChassisMoveMs = 0;
 
 // 中止请求：STOP/RESET 时置位，底盘运动循环与发牌任务都尽早退出。
 // 代次（generation）消除"清除标志"的竞态：STOP/RESET 递增代次，发牌任务先采样代次、
@@ -225,12 +228,29 @@ void hall_homing(void) {
 }
 
 // 首次使能：EN 拉低并等待 CHASSIS_SETTLE_MS 稳定（参考 enableDriver()）。
-static void chassis_enable_driver(void) {
+void chassis_enable_driver(void) {
     if (s_driverEnabled) return;
     g_chassis.enableOutputs();
     s_driverEnabled = true;
     vTaskDelay(pdMS_TO_TICKS(CHASSIS_SETTLE_MS));
-    Serial.println("[STEP] driver enabled");
+    s_lastChassisMoveMs = millis();   // 空闲断电计时从"使能这一刻"起算
+    Serial.println("[PWR] chassis driver ON (holding torque)");
+}
+
+// 断开底盘驱动：EN 拉高 → 绕组断电，不再吃保持电流（低功耗 A 级，见 app_config.h）。
+// 不锁轴也没关系：转盘经齿轮/摩擦自锁，位置由机械保持；软件位置（g_chassis.currentPosition()）
+// 不受断电影响，下次 chassis_at_angle()/chassis_rotate_to_angle() 照常按它算。
+// ⚠️ 发牌进行中（DEALING）不要调用：那时需要绕组锁住角度（理由见 app_config.h）。
+void chassis_power_release(void) {
+    if (!s_driverEnabled) return;
+    g_chassis.setSpeed(0.0F);
+    g_chassis.disableOutputs();
+    s_driverEnabled = false;
+    Serial.println("[PWR] chassis driver OFF (standby, no holding torque)");
+}
+
+bool chassis_driver_enabled(void) {
+    return s_driverEnabled;
 }
 
 // 相对移动 delta 步：调用方只需传步数（角度/圈数换算在上一层完成）。
@@ -245,24 +265,31 @@ static bool chassis_run_relative(long delta) {
     chassis_enable_driver();
     long finalTarget = g_chassis.currentPosition() + delta;
     g_chassis.moveTo(finalTarget);          // run() 内部按加速度曲线逐步逼近
-    Serial.printf("[STEP] move %ld motor steps -> pos %ld\n", delta, finalTarget);
 
     long dist = (delta < 0) ? -delta : delta;
     double v = (double)kChassisStepRate;
     double a = (double)kChassisAccelRate;
-    double rampSec = v / a;                 // 0→v 所需时间（作为用时上界的一部分）
-    uint32_t expectMs = CHASSIS_SETTLE_MS + 5000U +
-                        (uint32_t)(((double)dist / v + rampSec) * 1000.0);
-    uint32_t timeoutMs = (expectMs > (uint32_t)CHASSIS_MOVE_TIMEOUT_MS)
-                             ? expectMs
-                             : (uint32_t)CHASSIS_MOVE_TIMEOUT_MS;
+    double rampSec = v / a;                 // 0→v（以及 v→0）各需的时间
+    // 预计用时 = 加速 + 匀速 + 减速；距离短到没跑满速时，这个式子仍是安全上界
+    double expectSec = (double)dist / v + 2.0 * rampSec;
+    uint32_t expectMs = (uint32_t)(expectSec * 1000.0);
+    // 超时 = 预计用时 × 系数 + 余量（下限兜底）：改转速/角度都不用重调常数
+    uint32_t timeoutMs = (uint32_t)((float)expectMs * CHASSIS_TIMEOUT_FACTOR) +
+                         (uint32_t)CHASSIS_TIMEOUT_MARGIN_MS;
+    if (timeoutMs < (uint32_t)CHASSIS_TIMEOUT_MIN_MS) {
+        timeoutMs = (uint32_t)CHASSIS_TIMEOUT_MIN_MS;
+    }
+
+    Serial.printf("[STEP] move %ld motor steps -> pos %ld (expect %ums, timeout %ums)\n",
+                  delta, finalTarget, (unsigned)expectMs, (unsigned)timeoutMs);
 
     uint32_t t0 = millis();
     while (g_chassis.distanceToGo() != 0) {
         g_chassis.run();        // 高频调用：内部按加速度/减速度更新转速并产 STEP 脉冲
-        if (s_motionAbort) {    // STOP/RESET：立即停脉冲，保持 EN 锁轴
+        if (s_motionAbort) {    // STOP/RESET：立即停脉冲（EN 先不动，回 IDLE 时由状态机断电）
             Serial.println("[STEP] aborted by stop request");
             g_chassis.setSpeed(0.0F);
+            s_lastChassisMoveMs = millis();
             return false;
         }
         if ((uint32_t)(millis() - t0) > timeoutMs) {
@@ -270,15 +297,43 @@ static bool chassis_run_relative(long delta) {
             g_chassis.setSpeed(0.0F);
             g_chassis.disableOutputs();
             s_driverEnabled = false;
+            s_lastChassisMoveMs = millis();
             return false;
         }
         taskYIELD();            // 只让出调度，不做 1ms 延时
     }
-    // run() 到位即已完成减速；保持 EN 有效，锁轴等待下一条指令
-    Serial.println("[STEP] done: ramped stop, driver remains enabled and holding");
-    // 到位后再等机械停稳（避免转盘还在振动就发牌导致偏位）
-    if (CHASSIS_MOVE_SETTLE_MS > 0) vTaskDelay(pdMS_TO_TICKS(CHASSIS_MOVE_SETTLE_MS));
+    // run() 到位即已完成减速；这里**保持 EN 有效**（发牌过程中要锁住转盘角度，
+    // 否则推牌的反作用力会把转盘顶偏，后面每张牌就都落错堆了）。
+    // 真正断电交给"不锁轴的时段"：回到 IDLE / 进入 GAME_ACTIVE 时由 power_manage_tick 统一处理。
+    // 到位后的稳定等待**按转速算**：电机轴转一圈的时间 × 系数，再夹到上下限之间。
+    // 转速越高，停下时的残余振动越小 → 等得越短；改 CHASSIS_RPM 后这里自动跟着变。
+    uint32_t revMs    = (uint32_t)(60000.0 / (double)CHASSIS_RPM);   // 电机轴转一圈
+    uint32_t settleMs = (uint32_t)((float)revMs * CHASSIS_SETTLE_K);
+    if (settleMs < (uint32_t)CHASSIS_SETTLE_MIN_MS) settleMs = (uint32_t)CHASSIS_SETTLE_MIN_MS;
+    if (settleMs > (uint32_t)CHASSIS_SETTLE_MAX_MS) settleMs = (uint32_t)CHASSIS_SETTLE_MAX_MS;
+    Serial.printf("[STEP] done in %ums, settle %ums (rev %ums x %.2f), driver holding\n",
+                  (unsigned)(millis() - t0), (unsigned)settleMs,
+                  (unsigned)revMs, (double)CHASSIS_SETTLE_K);
+    if (settleMs) vTaskDelay(pdMS_TO_TICKS(settleMs));
+    s_lastChassisMoveMs = millis();   // IDLE 空闲断电计时的起点
     return true;
+}
+
+// 顶层角度 → 电机绝对步数（33:10 齿轮换算，与 kStepsPerTopRev 同一套算法）
+static long chassis_angle_to_steps(int16_t angleDeg) {
+    int16_t a = (int16_t)(angleDeg % 360);
+    if (a < 0) a += 360;
+    return (long)((double)a * (double)CHASSIS_STEPS_PER_REV * (double)CHASSIS_GEAR_NUM /
+                      (360.0 * (double)CHASSIS_GEAR_DEN) + 0.5);
+}
+
+// 转盘当前是否已停在该角度上（按电机步数判断，容差 CHASSIS_AT_TOL_STEPS；角度按一圈取最短差）
+bool chassis_at_angle(int16_t angleDeg) {
+    long diff = chassis_angle_to_steps(angleDeg) - g_chassis.currentPosition();
+    diff %= kStepsPerTopRev;
+    if (diff < 0) diff += kStepsPerTopRev;
+    if (diff > kStepsPerTopRev / 2) diff = kStepsPerTopRev - diff;
+    return diff <= (long)CHASSIS_AT_TOL_STEPS;
 }
 
 // 顶层转盘转到指定角度（最短路径，0~359°；电机步数按 33:10 齿轮比换算）
@@ -286,14 +341,14 @@ bool chassis_rotate_to_angle(int16_t angleDeg) {
     int16_t a = (int16_t)(angleDeg % 360);
     if (a < 0) a += 360;
 
-    // 电机目标步数 = a/360 * 电机步数/圈 * 齿轮比（33:10）
-    long target = (long)(
-        (double)a * (double)CHASSIS_STEPS_PER_REV * (double)CHASSIS_GEAR_NUM /
-            (360.0 * (double)CHASSIS_GEAR_DEN) + 0.5);
+    long target = chassis_angle_to_steps(a);
     long cur = g_chassis.currentPosition();
     long delta = (target - cur) % kStepsPerTopRev;
     if (delta < 0) delta += kStepsPerTopRev;
     if (delta > kStepsPerTopRev / 2) delta -= kStepsPerTopRev;
+
+    // 已经停在该角度：不调用运动函数、不打 [STEP] 日志（发牌任务会打印 "skip rotate"）
+    if (delta == 0) return true;
 
     Serial.printf("[STEP] top %d deg (ratio %d:%d)\n",
                   a, CHASSIS_GEAR_NUM, CHASSIS_GEAR_DEN);
@@ -497,9 +552,65 @@ void busy_deal_step(const char *step) {
     (void)step;
 }
 
+// ================= 低功耗（A 级）=================
+// 两件事：底盘驱动断电（不锁轴的时段）+ CPU 按状态降频。设计依据与时序论证见 app_config.h。
+//
+// CPU 降频为什么不会造成时序错误（经典 ESP32）：
+//   80MHz 与 240MHz 下 APB 都是 80MHz（Arduino 核心 calculateApb()：freq >= 80 → 80MHz），
+//   所以 UART 115200、屏幕 SPI 10MHz、AccelStepper 的 setMinPulseWidth 等时基都不变；
+//   millis()/micros()/delay() 走 systimer + FreeRTOS tick，与 CPU 频率无关。
+//   差别只是"代码跑多快"，而本工程所有对外时序都是 ms 级、由 millis() 计量。
+static uint32_t s_cpuMhz = 0;   // 已设置的主频（0 = 还没设过；以芯片实际返回值为准）
+
+void power_set_cpu(uint32_t mhz) {
+    if (mhz == 0 || mhz == s_cpuMhz) return;
+    if (!setCpuFrequencyMhz(mhz)) {
+        Serial.printf("[PWR] cpu -> %u MHz FAILED (keep %u MHz)\n",
+                      (unsigned)mhz, (unsigned)getCpuFrequencyMhz());
+        return;
+    }
+    s_cpuMhz = getCpuFrequencyMhz();
+    Serial.printf("[PWR] cpu -> %u MHz (apb %u MHz, unchanged)\n",
+                  (unsigned)s_cpuMhz, (unsigned)(getApbFrequency() / 1000000UL));
+}
+
+// 低功耗巡检：由监控任务经 busy_monitor() 每 MONITOR_PERIOD_MS 调一次。
+void power_manage_tick(void) {
+    system_state_t st = state_get_current();
+
+#if CHASSIS_POWER_DOWN_IDLE
+    // IDLE 且已经"闲"了一会儿：断开底盘驱动（不锁轴）
+    if (st == STATE_IDLE && s_driverEnabled &&
+        (uint32_t)(millis() - s_lastChassisMoveMs) >= (uint32_t)CHASSIS_IDLE_POWER_DOWN_MS) {
+        chassis_power_release();
+    }
+#endif
+
+#if BOT_CPU_SCALE_ENABLE
+    // 需要性能档：不在 IDLE（发牌中 / 一局已发完等交互）、或蓝牙已连接（要保证响应速度）
+    const bool needPerf = (st != STATE_IDLE) || ble_connected();
+    power_set_cpu(needPerf ? BOT_CPU_PERF_MHZ : BOT_CPU_IDLE_MHZ);
+#endif
+}
+
 void busy_state_enter(uint8_t state) {
-    // TODO: 状态进入动作（例如 DEALING：清空计数、DEALING→GAME_ACTIVE：上传小程序）
-    (void)state;
+    // 状态进入动作。⚠️ 本函数在状态互斥量内被调用，只能做"不阻塞"的事（禁止 vTaskDelay）。
+    switch ((system_state_t)state) {
+    case STATE_IDLE:
+#if CHASSIS_POWER_DOWN_IDLE
+        // 回 IDLE：本局已结束/被取消，转盘不需要保持位置 → 直接断驱动（不锁轴）
+        chassis_power_release();
+#endif
+        break;
+    case STATE_GAME_ACTIVE:
+#if CHASSIS_POWER_DOWN_GAME
+        // 一局已发完，等用户长按结束 → 同样不需要保持位置
+        chassis_power_release();
+#endif
+        break;
+    default:
+        break;   // DEALING：保持使能锁轴（推牌反作用力会顶偏转盘，见 app_config.h）
+    }
 }
 
 void busy_state_exit(uint8_t state) {
@@ -508,5 +619,6 @@ void busy_state_exit(uint8_t state) {
 }
 
 void busy_monitor(void) {
+    power_manage_tick();   // 低功耗巡检：底盘驱动断电 + CPU 降频/升频
     // TODO: 电机到位/超时状态巡检、子板心跳、告警上报
 }

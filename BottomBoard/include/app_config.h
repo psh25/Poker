@@ -104,8 +104,44 @@ static const int16_t kDeckAngles[DECK_COUNT] = { 0, 45, 90, 135, 180, 225, 270, 
 #define CHASSIS_RPM                 30.0F   // 电机轴转速（rpm）；顶层转速 = CHASSIS_RPM ÷ 3.3
 #define CHASSIS_ACCEL_STEPS_PER_S2  5000.0F // 梯形加减速（step/s²）,越小启停越柔和
 #define CHASSIS_SETTLE_MS           500      // 使能后稳定等待（ms）
-#define CHASSIS_MOVE_SETTLE_MS      100      // 每次转到目标位置后的稳定等待（ms）：等机械停稳再发牌
-#define CHASSIS_MOVE_TIMEOUT_MS     60000    // 旋转超时保护基准（ms）；长距离按预计用时自动放宽
+// 到位稳定等待（等机械停稳再发牌）：**按转速自适应** —— 取"电机轴转一圈的时间 × 系数"。
+// 转速提高 → 停下时的残余振动变小 → 等待自动缩短，改 CHASSIS_RPM 后不用再重调这里的常数。
+// 系数 0.05 在 30rpm（2s/圈）下正好给出原来的 100ms。
+#define CHASSIS_SETTLE_K            0.05F    // 稳定等待 = (60000 / CHASSIS_RPM) × 该系数
+#define CHASSIS_SETTLE_MIN_MS       40       // 下限（ms）
+#define CHASSIS_SETTLE_MAX_MS       200      // 上限（ms）
+// 转动超时（堵转/失步/被挡住的软件兜底）：按"预计用时 × 系数 + 余量"自适应，并保留下限。
+// 原来是"预计用时 + 5s，且下限 60s"，实际等于永不触发；现在能真正当保护用。
+#define CHASSIS_TIMEOUT_FACTOR      3.0F     // 超时 = 预计用时 × 该系数 + 余量
+#define CHASSIS_TIMEOUT_MARGIN_MS   2000     // 余量（ms）
+#define CHASSIS_TIMEOUT_MIN_MS      3000     // 超时下限（ms）
+// "转盘已经停在某个角度上"的判定容差（电机步数；顶层 1 步 ≈ 0.0068°）
+#define CHASSIS_AT_TOL_STEPS        2
+
+// ================= 低功耗（A 级）=================
+// 只砍"待机白烧"的电，不改功能、不改任何 ms 级时序。三处：
+//
+// ① 底盘步进驱动 EN（不锁轴的时段断电）
+//    不转的时候把 EN 拉高断开驱动，绕组不再吃保持电流；转盘靠齿轮/摩擦自锁，不需要保持力矩。
+//    ⚠️ **DEALING 期间保持使能**：推牌的反作用力会把转盘顶偏，一旦实际角度和软件记录的
+//       位置分叉，后面每张牌都会落错堆。所以只在 IDLE / GAME_ACTIVE 断电。
+// ② CPU 降频
+//    经典 ESP32 在 80MHz 和 240MHz 下 APB **都是 80MHz**（80MHz 时 CPU 直接跑在 APB 上），
+//    所以 UART(115200)、屏幕 SPI(10MHz)、AccelStepper 的 setMinPulseWidth 等时基全都不变；
+//    millis()/micros()/delay() 走 systimer + FreeRTOS tick，同样与 CPU 频率无关。
+//    → 降频只影响"代码跑多快"，不会造成时序错误。发牌/转动性能档仍在 240MHz。
+// ③ 蓝牙（见 ble_comms.cpp）
+//    控制器休眠 + 放宽广播间隔：手机发现该设备会慢一点点（百 ms 级），待机电流下降明显。
+#define CHASSIS_POWER_DOWN_IDLE     1      // 1 = IDLE 空闲一段时间后断开底盘驱动
+#define CHASSIS_POWER_DOWN_GAME     1      // 1 = GAME_ACTIVE（一局已发完、等长按）也断开
+#define CHASSIS_IDLE_POWER_DOWN_MS  10000  // IDLE 下"最后一次转动之后"多久断电（ms）
+
+#define BOT_CPU_SCALE_ENABLE        1      // 1 = 按状态降频
+#define BOT_CPU_IDLE_MHZ            80     // 空闲档（IDLE 且蓝牙未连接）
+#define BOT_CPU_PERF_MHZ            240    // 性能档（DEALING / GAME_ACTIVE / 蓝牙已连接）
+
+#define BLE_MODEM_SLEEP_ENABLE      1      // 1 = 打开蓝牙控制器休眠（esp_bt_sleep_enable）
+#define BLE_ADV_INTERVAL_UNITS      160    // 广播间隔（单位 0.625ms）160 = 100ms；库默认 32 = 20ms
 
 // ================= 子板串口 =================
 // 物理层为滑环 2 线串口（RX/TX），软件按普通 UART 处理；

@@ -24,6 +24,7 @@
 #include "protocol.h"
 #include "display.h"
 #include "hardware.h"
+#include "ble_comms.h"
 
 // ================= 调试 CLI：电脑串口 → 底板 / 子板 =================
 // CLI 调试用发牌计划缓冲（与发牌任务的分开，避免互相覆盖）
@@ -47,6 +48,8 @@ static void sub_debug_print_help(void) {
     Serial.println("[CLI] selftest                     - 打印底板自检结果 + 当前可读状态（不动作、不阻塞）");
     Serial.println("[CLI] sub selftest                 - 让子板重跑自检（含摄像头校准，约 2s 无响应）");
     Serial.println("[CLI] setstate <idle|dealing|active> - 强制切换状态（调试）");
+    Serial.println("[CLI] power                        - 低功耗状态：CPU 频率 / 底盘驱动 / 蓝牙");
+    Serial.println("[CLI] power motor on|off           - 手动强制底盘驱动使能/断电（on 会阻塞 ~0.5s）");
     Serial.println("[CLI] sub <cmd> [hex data...]      - 底板→子板（自动组帧+CRC）");
     Serial.println("[CLI]      cmd: dealstart|stop|statusquery|selftest|reset|camcapture 或 hex");
     Serial.println("[CLI] sim <type> [hex data...]     - 模拟子板→底板事件（喂给协议分发）");
@@ -371,6 +374,31 @@ static void sub_debug_cli_process(const char *line) {
             send_display_command(&cmd);
         }
         Serial.printf("[CLI] setstate -> %d\n", (int)st);
+        return;
+    }
+
+    // power [motor on|off]：低功耗状态查看 / 手动强制底盘驱动（调试用；见 app_config.h 低功耗一节）
+    if (strcmp(line, "power") == 0 || strncmp(line, "power ", 6) == 0) {
+        const char *p = (line[5] == '\0') ? "" : (line + 6);
+        if (p[0]) {
+            if (strcmp(p, "motor on") == 0) {
+                chassis_enable_driver();          // 使能 + 500ms 稳定等待（阻塞本任务，调试命令可接受）
+            } else if (strcmp(p, "motor off") == 0) {
+                chassis_power_release();
+            } else {
+                Serial.println("[CLI] power: motor on|off（或直接敲 power 查看状态）");
+                return;
+            }
+        }
+        static const char *stNames[] = {"IDLE", "DEALING", "GAME_ACTIVE"};
+        system_state_t st = state_get_current();
+        Serial.printf("[CLI] power: cpu=%u MHz apb=%u MHz | chassis driver=%s | ble=%s | state=%s\n",
+                      (unsigned)getCpuFrequencyMhz(), (unsigned)(getApbFrequency() / 1000000UL),
+                      chassis_driver_enabled() ? "ON (holding)" : "OFF (standby)",
+                      ble_connected() ? "connected" : "advertising",
+                      stNames[(uint8_t)st < 3 ? (uint8_t)st : 0]);
+        Serial.printf("[CLI] 说明：IDLE 下 %u ms 无转动会自动断驱动，GAME_ACTIVE 立即断；"
+                      "DEALING 保持锁轴\n", (unsigned)CHASSIS_IDLE_POWER_DOWN_MS);
         return;
     }
 

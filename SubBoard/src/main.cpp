@@ -6,6 +6,7 @@
  *   0. 双路调试串口（USB CDC + UART0/CH340）→ boot 横幅
  *   1. 硬件初始化（GPIO / UART / 中断）
  *   2. 上电自检 → 上报 EVT_READY
+ *   2.6 低功耗：CPU 降频 + 电机驱动待机（时序安全性见 app_config.h 的"低功耗"一节）
  *   3. （可选）自动连续发牌：AUTO_DEAL_ENABLE=1 时延时后自动一张接一张发牌
  *   4. 进入 IDLE，主循环：解析串口命令 → 执行状态机
  */
@@ -156,6 +157,7 @@ void setup() {
                 "反转撤回后重试，仍失败则报 EVT_ERROR_CARD_JAM 停机");
 #endif
 
+    sub_power_setup();            // 2.6 低功耗：CPU 降频 + 电机驱动待机（时序见 app_config.h）
     dbg_println("[SUB] boot ok, waiting for commands");
     dbg_println("[CLI] type 'help' for direct command injection");
 
@@ -179,4 +181,12 @@ void loop() {
 
     // 3) 执行裸机状态机（超级循环，全部超时基于 millis()）
     sub_state_run();
+
+    // 4) 低功耗：按 SUB_LOOP_DELAY_MS 让出 CPU（默认 1ms）。
+    //    改之前 loop() 是"全速空转"，CPU 一直满载；现在变成 1kHz 节拍，CPU 占用降到个位数 %。
+    //    时序不受影响：采样率 1kHz ≫ 光电门去抖 PHOTO_DEBOUNCE_MS(20ms)，
+    //    触发脉冲宽度、出牌动作、等待超时全部基于 millis()（与循环快慢无关）。
+#if SUB_LOOP_DELAY_MS > 0
+    delay(SUB_LOOP_DELAY_MS);
+#endif
 }

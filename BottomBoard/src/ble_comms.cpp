@@ -10,6 +10,7 @@
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
+#include <esp_bt.h>
 
 #include "ble_comms.h"
 #include "itc.h"
@@ -65,8 +66,21 @@ void ble_init(void) {
     rxChar->setCallbacks(new BleRxCallbacks());
 
     svc->start();
-    s_server->getAdvertising()->start();
+    // 低功耗 A 级：放宽广播间隔（BLE 库默认 32 = 20ms）。
+    // 间隔变大 → 手机扫描发现该设备会晚一点点（百 ms 级），但待机平均电流明显下降。
+    BLEAdvertising *adv = s_server->getAdvertising();
+    adv->setMinInterval(BLE_ADV_INTERVAL_UNITS);
+    adv->setMaxInterval(BLE_ADV_INTERVAL_UNITS);
+    adv->start();
     Serial.printf("[BLE] init '%s' service=%s\n", BLE_DEVICE_NAME, BLE_SERVICE_UUID);
+    Serial.printf("[BLE] adv interval %.0f ms\n", (double)BLE_ADV_INTERVAL_UNITS * 0.625);
+
+#if BLE_MODEM_SLEEP_ENABLE
+    // 低功耗 A 级：无收发时让控制器休眠（需要 IDF 编译时开启 modem sleep）。
+    // 调用失败只打印原因、不影响功能（有些配置没编进 modem sleep）。
+    esp_err_t err = esp_bt_sleep_enable();
+    Serial.printf("[BLE] modem sleep: %s\n", (err == ESP_OK) ? "enabled" : esp_err_to_name(err));
+#endif
 }
 
 bool ble_connected(void) {

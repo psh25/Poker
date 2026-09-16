@@ -14,12 +14,15 @@
 
 | 功能 | OpenMV H7 Plus | 子板 | 方向 |
 |---|---|---|---|
-| 识别触发 | P6 | `PIN_CAM_TRIG`（GPIO20） | 子板 → 摄像头 |
+| 识别触发 | P6 | `PIN_CAM_TRIG`（GPIO4） | 子板 → 摄像头 |
 | UART 发送 | P4 / TX | `PIN_CAM_RX`（GPIO46） | 摄像头 → 子板 |
 | UART 接收 | P5 / RX | `PIN_CAM_TX`（GPIO10） | 子板 → 摄像头（**只用来下发指令**，如开机自检的校准，见第 7 节） |
 | 地 | GND | GND | **必须共地** |
 
 UART 参数：**115200，8N1，无流控**。逻辑电平 3.3V。
+
+> 引脚变更记录：TRIG 原为 GPIO20，与子板电机方向脚 `PIN_MOTOR_AIN2` 撞脚（且 GPIO19/20 是
+> ESP32-S3 原生 USB 的 D-/D+），已改到 **GPIO4**。以 `SubBoard/include/pins_config.h` 为准。
 
 ## 2. 触发时序（注意是下降沿）
 

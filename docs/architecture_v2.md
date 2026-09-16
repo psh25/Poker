@@ -120,6 +120,38 @@ v3.8（2026-09-13）修订（**发牌方案：特殊牌分流 + 分拣模式 + �
    没有分流规则的计划保持原来的“截图与转动并行”，时序不变。
 ⑤ 收尾核对：结束时打印实际分流张数，与参数声明不符时提示（牌源装错牌最容易在这露出来）；无子板模式下会按“牌源 ÷ 特殊牌张数”的间隔模拟出对应类别，方便验证分流逻辑。
 
+v3.9（2026-09-16）修订（**底盘转动时序两处优化**）：
+① **同牌堆不重复转动**：`rotate_to_deck()` 先查新增的 `chassis_at_angle()`，已经停在目标角度就直接跳过——
+   随机发牌"同一组内连发多张"、顺序发牌同堆相邻张都属于这种情况。跳过时不再调用运动函数、不再打 `[STEP] top …` 日志，
+   日志里会出现 `[DEAL] deck N: already there, skip rotate` 便于确认。
+   （说明：原来 `chassis_run_relative(0)` 本来就会立即返回、**并不产生等待**，所以这条省下的是函数调用与日志噪声，
+   以及对"到底转没转"的判读成本；真正的等待时间优化见第 ② 条。）
+② **等待时长自适应转速**：
+   - 到位稳定等待由固定 `CHASSIS_MOVE_SETTLE_MS`(100ms) 改为 **「电机轴转一圈时间 × `CHASSIS_SETTLE_K`(0.05)」**，
+     再夹到 `CHASSIS_SETTLE_MIN_MS`(40) ~ `CHASSIS_SETTLE_MAX_MS`(200) 之间。30rpm（2s/圈）下正好是原来的 100ms，
+     转速提高后自动缩短，**改 `CHASSIS_RPM` 不用再重调常数**；
+   - 转动超时由"预计用时 + 5s、且下限 60s（实际等于永不触发）"改为 **「预计用时 × `CHASSIS_TIMEOUT_FACTOR`(3) + `CHASSIS_TIMEOUT_MARGIN_MS`(2s)」**，下限 `CHASSIS_TIMEOUT_MIN_MS`(3s)，
+     堵转/失步能真正在几秒内被发现并断电报警；
+   - `chassis_run_relative()` 现在会把「预计用时 / 超时 / 实际用时 / 本次稳定等待」都打进串口日志，便于按实测调系数。
+
+v4.0（2026-09-16）修订（**低功耗 A 级 + 引脚更正**）：
+① 子板 `PIN_CAM_TRIG` 由 **GPIO20 改到 GPIO4**：20 与子板电机方向脚 `PIN_MOTOR_AIN2` 撞脚（两者会互相打架），
+   且 GPIO19/20 是 ESP32-S3 原生 USB 的 D-/D+。旧 PCB 已损坏、现按飞线自由分配（详见 `SubBoard/include/pins_config.h`）。
+② **底盘步进驱动在不锁轴的时段断电**：进入 IDLE（且 `CHASSIS_IDLE_POWER_DOWN_MS` 内无转动）或 GAME_ACTIVE 时
+   `chassis_power_release()` 把 EN 拉高、断开绕组保持电流；**DEALING 期间保持使能锁轴**——
+   推牌的反作用力会把转盘顶偏，一旦实际角度与软件记录的位置分叉，后面每张牌都会落错堆。
+   实现上由 `vDealTask` 在**每局开始时统一使能一次**（`chassis_enable_driver()`），不依赖"转到才使能"：
+    否则本局第一张牌恰好不用转动（`chassis_at_angle()` 命中）时整局都不会使能，转盘全程自由。
+   新增 CLI `power`（查看 CPU/驱动/蓝牙状态）与 `power motor on|off`（手动强制，便于验证）。
+③ **CPU 按状态降频**：IDLE 且蓝牙未连接时 80MHz；DEALING / GAME_ACTIVE / 蓝牙已连接时 240MHz。
+   经典 ESP32 在 80MHz 与 240MHz 下 **APB 都是 80MHz**（Arduino 核心 `calculateApb()`：freq ≥ 80 → 80MHz），
+   所以 UART 115200、屏幕 SPI 10MHz、`millis()`/`micros()` 全部不受影响——降频只改"代码跑多快"，不引入时序错误。
+④ **蓝牙省电**：`esp_bt_sleep_enable()`（控制器休眠）+ 广播间隔放宽到 `BLE_ADV_INTERVAL_UNITS`(160 = 100ms，库默认 20ms)，
+   代价是手机扫描发现该设备会晚一点点。
+⑤ **子板省电**：主循环按 `SUB_LOOP_DELAY_MS`(1ms) 让出 CPU（原来 `loop()` 全速空转、CPU 常驻满载）；
+   CPU 降到 `SUB_CPU_MHZ`(80MHz)，S3 的 APB 恒为 80MHz，故 UART/LEDC PWM 时基不变；
+   发牌电机 TB6612 的 STBY 在空闲时拉低进待机（µA 级）。子板侧详见 [subboard_architecture.md](subboard_architecture.md) 第十一章。
+
 与 v1 的逐项差异见 [architecture_v2_diff.md](architecture_v2_diff.md)；子板详细设计见 [subboard_architecture.md](subboard_architecture.md)。
 
 ---

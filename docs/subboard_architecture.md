@@ -47,6 +47,12 @@ v1.10（2026-09-13）修订（**光电门改为"动作期间只记录、动作�
 ③ 相应地：删除状态 `WAIT_CARD` / `WAIT_GONE`，删除 `PHOTO_TIMEOUT_MS` / `PHOTO_JAM_MS` / `MOTOR_STARTUP_MS`；
    `EVT_CARD_OUT` 的发出时机由"牌离开光门的那一刻"改为"整张动作确认成功后"。
 
+v1.11（2026-09-16）修订（**引脚更正 + 低功耗 A 级**）：
+① `PIN_CAM_TRIG` 由 **GPIO20 改到 GPIO4**：20 与子板电机方向脚 `PIN_MOTOR_AIN2` 撞脚（会互相打架），
+   且 GPIO19/20 是 ESP32-S3 原生 USB 的 D-/D+。旧 PCB 已损坏、现按飞线自由分配，见 `pins_config.h`。
+② 低功耗 A 级（不改功能与时序）：主循环加 `SUB_LOOP_DELAY_MS` 节拍、CPU 降到 `SUB_CPU_MHZ`、
+   发牌电机 STBY 空闲拉低进待机。时序安全性论证见第十一章。
+
 ## 一、职责定位
 
 子板是**“带反馈的执行器”**，不是决策者：
@@ -270,8 +276,8 @@ CALIBRATE\r\n          // 子板 sub_camera_calibrate() 发出，随后等 CAM_C
 - 摄像头端**目前不读 UART**（`重要信息/STANDALONE_IO_PROTOCOL(1).md` 第 7 节），需要加接收处理后才生效；
   在那之前自检只打印 `[CAM] calibrate: no reply`，`SUB_ST_CAM_CALIB` 位留 0，**不算失败**；
 - 详细格式、回应约定、联调步骤见 [camera_protocol.md](camera_protocol.md) 第 7 节。
-- 注意：`PIN_CAM_TRIG`(GPIO20) 与 `PIN_CAM_TX`(GPIO10) 是两回事——下发指令**不需要**碰 TRIG，
-  所以自检里只初始化 UART，不动 GPIO20（它是原生 USB 的 D+，一动原生 USB 日志就没了）。
+- 注意：`PIN_CAM_TRIG`(GPIO4) 与 `PIN_CAM_TX`(GPIO10) 是两回事——下发指令**不需要**碰 TRIG，
+  所以自检里只初始化 UART，不动 TRIG（免得开机就给摄像头发一个假触发）。
 - **串口日志约定**：子板把摄像头**发来的整行原文**原样回显（前缀 `[CAM] `），不打印解码后的 `card/src`；
   解码结果只进板间帧 `EVT_CARD_VALUE`。排查摄像头时能直接看到它到底发了什么。
 
@@ -397,3 +403,30 @@ void loop() {
 3. ~~**协议帧格式定稿**~~ → 已定：与底板第七章对齐，见 [board_protocol.md](board_protocol.md)。
 4. ~~**光敏传感器安装与触发电平**~~ → 已定：改用光电门，**有牌 = 低电平（GND）**、无牌 = 高；采样为**电平轮询 + 去抖**（不是中断/边沿），参数见 `app_config.h` 的 `PHOTO_DEBOUNCE_MS` / `PHOTO_GONE_MS`。
 5. **发牌电机驱动**：TB6612 已实测可用；**堵转电流检测脚未接**，堵转只能靠"动作结束后的光电门判定 + 撤回重试"间接判断。
+
+## 十一、低功耗（A 级，2026-09-16）
+
+只做"不改功能、不改时序"的静态省电，三处，参数都在 `include/app_config.h`：
+
+| # | 措施 | 位置 | 效果 | 关掉它 |
+|---|---|---|---|---|
+| ① | 主循环按 `SUB_LOOP_DELAY_MS`(1ms) 让出 CPU | `main.cpp` 的 `loop()` | 原来 `loop()` 全速空转、CPU 常驻满载；现在 1kHz 节拍，占用降到个位数 % | `SUB_LOOP_DELAY_MS 0` |
+| ② | CPU 降到 `SUB_CPU_MHZ`(80MHz) | `sub_power_setup()`（`setup()` 末尾调用） | 动态功耗随频率近似线性下降 | `SUB_CPU_MHZ 0` |
+| ③ | 发牌电机驱动进待机（STBY 拉低） | `busy_motor_stop()` / `sub_hardware_init()` | TB6612 输出关断，待机电流 µA 级；只在动作期间使能 | 不需要关，`busy_motor_*` 会自己拉高 |
+
+### 为什么降频不会造成时序错误（关键结论）
+
+ESP32-S3 的 **APB 时钟恒为 80MHz**：Arduino 核心 `esp32-hal-cpu.c` 的 `calculateApb()` 对 S3 直接返回
+`APB_CLK_FREQ`，所以 CPU 从 240MHz 降到 80MHz **不改变 APB**。挂 APB 的外设因此全部不变：
+
+| 外设 / 时序 | 时钟来源 | 降频后 |
+|---|---|---|
+| 板间 UART、摄像头 UART（115200 8N1） | APB 分频 | 波特率不变 |
+| 发牌电机 PWM（LEDC 20kHz / 8bit） | APB 分频 | 频率与占空比不变 → 转速不变 |
+| `millis()` / `delay()` / 所有 ms 级时序 | systimer + FreeRTOS tick | 与 CPU 频率无关，不变 |
+| 摄像头触发脉冲 `CAM_TRIG_PULSE_MS`(200ms) | `millis()` | 200ms ± 1 个循环节拍（≤1ms） |
+
+结论：降频只让"同样的代码跑得慢一点"，而这份裸机负载本来就极轻（1kHz 轮询 + 串口解析），
+80MHz 有大量余量。**唯一需要现场确认的是 USB CDC 日志**：若降频后 `Serial`（原生 USB）输出异常，
+把 `SUB_CPU_MHZ` 改成 0 即可 —— `Serial0`（UART0/CH340）不受影响，日志不会完全丢。
+上电时会打印 `[PWR] cpu <旧> -> <新> MHz (ok/FAILED), apb <n> MHz`，看一眼这行即可判断。

@@ -11,9 +11,9 @@
 // 单张动作固定为：正转 MOTOR_FWD_MS → 刹车 MOTOR_BRAKE_MS → 反转 MOTOR_REV_MS → 停顿 MOTOR_PAUSE_MS
 // ⚠️ MOTOR_FWD_MS 现在是**唯一的出牌推进时长**（不再"等牌离开光门"才换相），
 //    必须保证能把一张牌完整推过出牌口并留出余量；太短会把"还在路上"的牌判成卡住。
-#define MOTOR_FWD_MS 380   // 正转出牌时长：一张牌送出的时间
-#define MOTOR_REV_MS 250   // 出牌后反转回退时长（让下一张退到摄像头可拍位置；0=不反转）
-#define MOTOR_BRAKE_MS 100 // 正转→反转之间的短刹车（AIN1=AIN2=高，PWM=0；0=直接换向）
+#define MOTOR_FWD_MS 420   // 正转出牌时长：一张牌送出的时间
+#define MOTOR_REV_MS 280   // 出牌后反转回退时长（让下一张退到摄像头可拍位置；0=不反转）
+#define MOTOR_BRAKE_MS 50 // 正转→反转之间的短刹车（AIN1=AIN2=高，PWM=0；0=直接换向）
 #define MOTOR_PAUSE_MS 100 // 每张牌之间的停顿（让牌完全出去、牌堆复位；0=不停）
 #define MOTOR_DUTY 200     // 正转 PWM 占空比（约 78%）
 #define MOTOR_REV_DUTY 160 // 反转 PWM 占空比（约 63%）
@@ -77,3 +77,17 @@
 
 // ===== 单卡数据缓冲（架构第六章：只保留当前一张牌，无历史缓存）=====
 #define CARD_DATA_MAX 32
+
+// ===== 低功耗（A 级：只砍"待机白烧"的电，不改功能与时序）=====
+// 三条措施，都不依赖任何新硬件：
+//   ① 主循环节拍：裸机 loop() 原本全速空转（几十万次/秒），加一次 delay 后按 SUB_LOOP_DELAY_MS
+//      节拍跑，空转耗电从 ~100% CPU 掉到个位数 %。采样率仍是 1kHz，远高于光电门去抖
+//      PHOTO_DEBOUNCE_MS(20ms)，判定逻辑完全不受影响。
+//   ② CPU 降频：ESP32-S3 的 APB 时钟**固定 80MHz**（CPU 分频不改 APB，见 Arduino 核心
+//      esp32-hal-cpu.c 的 calculateApb()）。UART 波特率、LEDC(PWM) 的 20kHz 都挂在 APB 上，
+//      所以降频只影响"代码跑多快"，不改任何外设时基；millis()/delay() 走 systimer + FreeRTOS
+//      tick，同样与 CPU 频率无关 → 所有 ms 级时序（触发脉冲宽度、出牌动作、光电门去抖）不变。
+//   ③ 电机驱动待机：TB6612 的 STBY 拉低 = 输出关断（待机电流 µA 级），见 hardware.cpp。
+#define SUB_LOOP_DELAY_MS 1   // 主循环空转节拍（ms）；0 = 不延时（恢复原来的全速空转）
+#define SUB_CPU_MHZ       80  // 运行主频（MHz）；0 = 不动（保持开发环境默认 240MHz）
+                              // 若降频后 USB CDC 日志异常，把它改回 0（UART0/CH340 不受影响）

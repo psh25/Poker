@@ -32,7 +32,7 @@ TEMPLATE_GROUP = "suit"
 # 为兼容已有文件，也允许 "joker_big" 和 "joker_small"；识别时仍按颜色区分。
 TEMPLATE_LABEL = "heart"
 
-# OpenMV 设备端模板根目录。若需要频繁采集，可改为 "/sdcard/templates"。
+# OpenMV 设备端模板根目录，固定使用内部 Flash。
 TEMPLATE_ROOT = "/flash/templates"
 
 # 以下 ROI 均为 QVGA（320x240）坐标：(x, y, w, h)。

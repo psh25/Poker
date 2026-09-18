@@ -73,10 +73,10 @@ DISCARD_AFTER_TRIGGER = 1
 PRINT_TIMING = True
 DEBUG_DRAW_TRIGGER_FRAME = True  # Draw only after USB result/timing completes.
 
-# Optional ground-truth sample collection. The exact frame used for recognition
-# is saved before any IDE rectangles are drawn. Prefer SD for bulk BMP storage.
+# 可选的真值样本采集。默认关闭，避免将大量 BMP 写入内部 Flash；
+# 开启前请确认 Flash 剩余空间，识别所用原始帧会在 IDE 绘制矩形前保存。
 SAVE_TEST_SAMPLES = False
-SAMPLE_USE_SD_CARD = True
+SAMPLE_USE_SD_CARD = False
 SAMPLE_SESSION = "light01"
 SAMPLE_LABEL = "10_club"  # e.g. 10_club, spade, joker_red, back
 SAMPLE_POSITION = "center"  # center, left, right, up, down, angle_left...

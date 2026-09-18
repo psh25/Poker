@@ -286,7 +286,7 @@ CAM_WAIT后再处理。OpenMV的900 ms处理预算仍从P6下降沿开始，并�
 
 ```text
 BANK_READY rank=13 suit=4 joker=2 back=1
-READY:P6_ACTIVE_LOW UART3_115200 SD_TEMPLATES
+READY:P6_ACTIVE_LOW UART3_115200 FLASH_TEMPLATES
 CAMERA: {...}
 ```
 
@@ -322,12 +322,7 @@ OpenMV内部Flash：
 /flash/cards_hybrid_core.py
 /flash/cards_fast_config.py
 /flash/cards_fast_v1/camera.json
-```
-
-SD卡：
-
-```text
-/sdcard/cards_fast_v1/templates/
+/flash/cards_fast_v1/templates/
 ├── rank/
 ├── suit/
 ├── joker/
@@ -335,6 +330,8 @@ SD卡：
 ```
 
 将项目中的 `main_standalone.py` 复制到OpenMV内部Flash并改名为 `main.py`。
+模板采集、识别、相机配置均使用内部Flash，无需插入SD卡。若旧模板只在SD卡上，
+需先将完整的PGM/JSON文件对复制到上述Flash目录；程序不会自动迁移。
 
 ## 11. ESP32-S3子板集成信息
 

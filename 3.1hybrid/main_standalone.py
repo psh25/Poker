@@ -1,8 +1,8 @@
 """OpenMV H7 Plus standalone card recognizer.
 
 Copy this file to /flash/main.py. Keep cards_fast_config.py and
-cards_hybrid_core.py in /flash, and keep the template bank on the SD card at
-/sdcard/cards_fast_v1/templates.
+cards_hybrid_core.py in /flash, and keep the template bank in internal Flash at
+/flash/cards_fast_v1/templates. No SD card is needed.
 
 P6 falling edge -> exactly one triggered snapshot -> recognition on that frame.
 UART3: P4 TX, P5 RX, 115200 8N1. One result line is emitted per accepted
@@ -373,7 +373,7 @@ def run():
             state[2] = False
 
     trigger.irq(handler=on_falling, trigger=Pin.IRQ_FALLING)
-    print("READY:P6_ACTIVE_LOW UART3_115200 SD_TEMPLATES")
+    print("READY:P6_ACTIVE_LOW UART3_115200 FLASH_TEMPLATES")
     print("CAMERA:", camera)
 
     high_since = None

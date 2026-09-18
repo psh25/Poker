@@ -18,20 +18,19 @@
 PC 上的 `tests` 不需要上传，板上不需要 numpy、OpenCV 或 pytest。
 更新共用模块或配置后，重置板子再运行，避免使用旧模块缓存。
 
-在 `cards_fast_config.py` 中选择模板存储介质：
+当前 `cards_fast_config.py` 默认使用内部Flash：
 
 ```python
-USE_SD_CARD = True   # /sdcard/cards_fast_v1
 USE_SD_CARD = False  # /flash/cards_fast_v1，无需 SD 卡
 ```
 
-修改后重置 OpenMV，保证采集和识别加载同一个配置。使用 SD 时会确认挂载
-和剩余空间；使用 Flash 时完全不依赖 SD。两种模式均不会自动切换介质，
-避免模板被意外分散到两个目录。相机标定始终位于内部 Flash 的
+上传配置后重置 OpenMV，保证采集和识别加载同一个配置。模板只从
+`/flash/cards_fast_v1/templates` 读取，不会自动从SD卡迁移；若旧模板只在
+SD卡上，需先复制完整的PGM/JSON文件对。相机标定也位于内部Flash的
 `/flash/cards_fast_v1/camera.json`；若不存在，先运行一次相机标定。
 
-本版本不保存 PPM、BMP、JPG 或拒绝样本 JSON。只有成功模板的小型 PGM
-及配套 JSON 会写入 SD 卡；`SAVE_TEMPLATES=False` 只做实时验证，不写文件。
+本版本不保存 PPM、BMP、JPG 或拒绝样本 JSON。只有成功模板的小型PGM
+及配套JSON会写入内部Flash；`SAVE_TEMPLATES=False` 只做实时验证，不写文件。
 
 ## 2. 成像与 ROI 标定
 
@@ -127,7 +126,7 @@ JOKER_COLOR = "red"           # 黑王改为 "black"
 失败时只输出串口诊断，不写任何文件。
 
 模板先写为临时 PGM/JSON，同步后重命名提交，PGM 最后成为提交标志。
-启动加载时忽略残留的 `.tmp.*` 文件。不要在写入期间断电或热插拔 SD 卡。
+启动加载时忽略残留的 `.tmp.*` 文件。不要在写入期间断电或复位板子。
 
 每类默认最多 4 张模板，超限会明确报错，不静默截断或覆盖。
 人工清理时只归档确认不需要的成对 PGM/JSON，保留有代表性的模板。

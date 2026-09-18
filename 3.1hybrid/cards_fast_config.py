@@ -5,9 +5,8 @@ All coordinates are in the ORIGINAL QVGA frame. No card edges are required.
 Capture/recognition locator ROIs and thresholds live in each entry script.
 """
 
-# Select the template storage explicitly. Restart/reset OpenMV after changing
-# this value so every imported module uses the same path.
-USE_SD_CARD = True
+# 默认只使用内部 Flash；修改存储设置后须复位 OpenMV，确保采集和识别路径一致。
+USE_SD_CARD = False
 STORAGE_NAME = "cards_fast_v1"
 ROOT = ("/sdcard/" if USE_SD_CARD else "/flash/") + STORAGE_NAME
 MIN_SD_FREE_BYTES = 2 * 1024 * 1024

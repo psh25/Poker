@@ -8,10 +8,11 @@
 - `recognize_cards_hybrid.py`：触发识别和 USB 诊断输出入口。
 
 旧模板与本版不兼容。本版继续使用 `cards_fast_config.py` 中唯一的
-`cards_fast_v1` 路径，不建立 v2 路径。开始采集前，应先归档或清空所选介质
-下 `cards_fast_v1/templates` 内的旧 `.pgm/.json`；程序检测到旧签名时会停止，
-避免新旧模板混用。`USE_SD_CARD=True` 使用 `/sdcard/cards_fast_v1`，设为
-`False` 使用 `/flash/cards_fast_v1`。相机参数仍只保存在 Flash 的小型 JSON 中。
+`/flash/cards_fast_v1` 路径，不建立 v2 路径。开始采集前，应先归档或清空
+`/flash/cards_fast_v1/templates` 内的旧 `.pgm/.json`；程序检测到旧签名时会停止，
+避免新旧模板混用。当前 `USE_SD_CARD=False`，采集、识别和独立运行入口均使用
+内部Flash，不需要SD卡；相机参数保存在 `/flash/cards_fast_v1/camera.json`。
+若原模板只在SD卡上，应将完整的PGM/JSON文件对迁移到Flash，程序不会自动迁移。
 
 ## 采集流程
 

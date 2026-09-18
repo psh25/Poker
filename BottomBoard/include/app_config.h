@@ -64,14 +64,21 @@ static const int16_t kDeckAngles[DECK_COUNT] = { 0, 45, 90, 135, 180, 225, 270, 
 #define CAMERA_TIMEOUT_MS      2000
 #define MONITOR_PERIOD_MS      500   // 系统监控巡检周期
 #define COMM_HEARTBEAT_MS      1000  // 子板心跳查询间隔
-#define COMM_DEAD_TIMEOUT_MS   3000  // 子板掉线判定阈值
+// 子板掉线判定阈值：**必须明显大于"子板最长阻塞、不回任何帧"的时间**。
+// 子板开机自检 / 收到 CMD_SELF_TEST 时是**阻塞式**的：摄像头校准 CAM_CALIB_WAIT_MS(3s)
+// + 电机微动 150+50+300ms ≈ 3.6s（见 SubBoard/include/app_config.h），这段时间它不回帧。
+// 原来的 3s 会把这段自检误判成掉线（日志出现假 OFFLINE，正巧在此时开局还会被 `sub offline` 拒掉）。
+// ⚠️ 以后若调大子板的 CAM_CALIB_WAIT_MS / 自检时长，这里要跟着调大。
+#define COMM_DEAD_TIMEOUT_MS   8000  // 子板掉线判定阈值（> 子板最长阻塞 ≈3.6s，留 ~2× 余量）
 
 // ================= 开机自检（见 重要信息/自检流程方案.md）=================
 // 只做“不需要人配合”的项目：
 //   自动判定：引脚电平读回、BLE 广播、与子板串口握手（发 CMD_STATUS_QUERY 等应答）；
 //   人眼/听声确认：屏幕色块、底盘微动 —— 这类没有数字反馈，只能看/听；
 //   交互项（转编码器、手转电机试锁轴力矩、拿磁铁试霍尔）不在开机自检里做。
-#define SELFTEST_SUB_WAIT_MS        5000  // 等子板 EVT_READY/应答的最长时间（子板不在时才会等满）
+// 等子板 EVT_READY/应答的最长时间（子板不在时才会等满这个时间）。
+// 子板开机自检约 3.6s（摄像头校准 3s + 电机微动 0.5s）才发 EVT_READY，所以这里要 > 3.6s。
+#define SELFTEST_SUB_WAIT_MS        5000
 #define SELFTEST_SUB_READY_GRACE_MS 300   // 已收到其它帧后，再多等一会儿看有没有 EVT_READY
 #define SELFTEST_SUB_PING_MS        500   // 等待期间重发 CMD_STATUS_QUERY 的间隔
 #define SELFTEST_CHASSIS_MOVE       1     // 1 = 底盘做 ±SELFTEST_CHASSIS_DEG 微动（可观察）；0 = 跳过
@@ -125,20 +132,23 @@ static const int16_t kDeckAngles[DECK_COUNT] = { 0, 45, 90, 135, 180, 225, 270, 
 //    不转的时候把 EN 拉高断开驱动，绕组不再吃保持电流；转盘靠齿轮/摩擦自锁，不需要保持力矩。
 //    ⚠️ **DEALING 期间保持使能**：推牌的反作用力会把转盘顶偏，一旦实际角度和软件记录的
 //       位置分叉，后面每张牌都会落错堆。所以只在 IDLE / GAME_ACTIVE 断电。
-// ② CPU 降频
-//    经典 ESP32 在 80MHz 和 240MHz 下 APB **都是 80MHz**（80MHz 时 CPU 直接跑在 APB 上），
-//    所以 UART(115200)、屏幕 SPI(10MHz)、AccelStepper 的 setMinPulseWidth 等时基全都不变；
-//    millis()/micros()/delay() 走 systimer + FreeRTOS tick，同样与 CPU 频率无关。
-//    → 降频只影响"代码跑多快"，不会造成时序错误。发牌/转动性能档仍在 240MHz。
+// ② CPU 降频（**已关闭，2026-09-18**）
+//    原理上没问题：经典 ESP32 在 80MHz 和 240MHz 下 APB 都是 80MHz（80MHz 时 CPU 直接跑在 APB 上），
+//    UART(115200)/屏幕 SPI(10MHz)/AccelStepper 时基不变，millis()/micros() 也走 systimer 与 CPU 频率无关。
+//    但"**运行中动态切主频**、而且 BLE 控制器还在跑"是本项目里唯一没经过长期验证的新路径（BT 需要重新校准 PHY，
+//    Arduino 的 setCpuFrequencyMhz 不走 esp_pm，不会替 BT 做这件事）。排查底板偶发重启期间先关掉、排除变量。
+//    要恢复：把 BOT_CPU_SCALE_ENABLE 改回 1（恢复后建议先跑一段时间观察稳定性）。
 // ③ 蓝牙（见 ble_comms.cpp）
 //    控制器休眠 + 放宽广播间隔：手机发现该设备会慢一点点（百 ms 级），待机电流下降明显。
 #define CHASSIS_POWER_DOWN_IDLE     1      // 1 = IDLE 空闲一段时间后断开底盘驱动
 #define CHASSIS_POWER_DOWN_GAME     1      // 1 = GAME_ACTIVE（一局已发完、等长按）也断开
 #define CHASSIS_IDLE_POWER_DOWN_MS  10000  // IDLE 下"最后一次转动之后"多久断电（ms）
 
-#define BOT_CPU_SCALE_ENABLE        1      // 1 = 按状态降频
-#define BOT_CPU_IDLE_MHZ            80     // 空闲档（IDLE 且蓝牙未连接）
-#define BOT_CPU_PERF_MHZ            240    // 性能档（DEALING / GAME_ACTIVE / 蓝牙已连接）
+// 0 = 关闭按状态降频（2026-09-18）：底板固定跑 240MHz。
+// 底板的省电收益本来就远小于子板（子板是常驻待机电流），而动态切频是唯一有风险的新路径。
+#define BOT_CPU_SCALE_ENABLE        0
+#define BOT_CPU_IDLE_MHZ            80     // 空闲档（仅 BOT_CPU_SCALE_ENABLE=1 时生效）
+#define BOT_CPU_PERF_MHZ            240    // 性能档（同上）
 
 #define BLE_MODEM_SLEEP_ENABLE      1      // 1 = 打开蓝牙控制器休眠（esp_bt_sleep_enable）
 #define BLE_ADV_INTERVAL_UNITS      160    // 广播间隔（单位 0.625ms）160 = 100ms；库默认 32 = 20ms

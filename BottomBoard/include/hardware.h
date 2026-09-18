@@ -22,13 +22,15 @@ void selftest_report(void);  // 复检报告：不动作、不阻塞，打印上
 uint16_t selftest_bits(void); // 最近一次自检结果位图（BOT_ST_*）
 
 // 底板侧自检位（本地用，不跨板传输；子板侧位定义在 protocol.h 的 SUB_ST_*）
-#define BOT_ST_TFT       0x0001u  // bit0 屏幕：已初始化并画完上电色块（需人眼确认）
-#define BOT_ST_CHASSIS   0x0002u  // bit1 底盘步进：已执行微动（需人眼/听声确认）
-#define BOT_ST_HALL      0x0004u  // bit2 霍尔：引脚电平已读取（自动；单次读数不能判定极性）
-#define BOT_ST_ENC       0x0008u  // bit3 编码器：A/B/SW 电平已读取（自动查空闲电平）
-#define BOT_ST_BLE       0x0010u  // bit4 蓝牙：已初始化并开始广播
-#define BOT_ST_SUBUART   0x0020u  // bit5 与子板串口：握手成功
-#define BOT_ST_SD        0x0040u  // bit6 SD 卡（未接线，跳过）
+// ⚠️ 规则（2026-09-17）：**只保留"固件自己能判定成败"的项目**。
+//    判定标准：固件能不能**不依赖人**给出通过/不通过。做不到的一律不进位图，只打印。
+//    被删掉的（以前都无条件报 OK，属于假通过）：
+//      · 屏幕色块 —— 要人看颜色/顺序；
+//      · 编码器 A/B/SW 电平 —— INPUT_PULLUP 下"没接"和"空闲高"读数完全一样，判不出来；
+//      · 蓝牙广播 —— "手机能搜到"要人找，协议栈内部状态也无法证明射频真的在工作；
+//      · 底盘微动 —— 没有霍尔/编码器反馈，只能听/看电机转不转；
+//      · 霍尔（功能已删除）、SD（未接线）。
+#define BOT_ST_SUBUART   0x0001u  // bit0 与子板串口：握手成功（真正的请求/应答往返）
 #define BOT_ST_DONE      0x0080u  // bit7 自检流程完整执行完毕
 
 bool chassis_rotate_to_angle(int16_t angleDeg);  // 底盘转盘转到指定角度（0~359°），true=到位

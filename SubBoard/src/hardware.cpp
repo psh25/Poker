@@ -466,9 +466,15 @@ void motor_self_test(void) {
 }
 
 // ================= 开机自检（子板，见 重要信息/自检流程方案.md）=================
-// 只做“不需要人配合”的项目：自动读取 + 制造可观察现象。
-// 需要人配合的项（转编码器、手转电机试锁轴力矩、拿磁铁试霍尔）不在开机自检里做。
-// 结果同时写进串口日志（人眼看）和 EVT_READY 位图（底板看，SUB_ST_*）。
+// 2026-09-17 修订：**结果位图只收"固件自己能判定成败"的项目**。
+//   以前电机微动、光电门静态电平、摄像头串口"初始化过"都无条件置 1，实际什么都没验，
+//   报告里却显示 OK —— 这个假通过已经删掉：观察项只打印，不进位图。
+//   现在留下的两项都能自动判定：
+//     ① 摄像头校准：发出 CALIBRATE 且收到非 ERROR 回应（说明这条 UART 双向通）；
+//     ② 与底板串口：自检期间收到过底板数据。
+//   观察项（不进结果）：电机微动（听/看）、光电门静态电平（没接传感器时上拉也读高，判不出来）。
+//   光电门的真实判定在发牌动作结束后的判定逻辑里（state_machine.cpp），不在自检里。
+//   需要人配合的交互项（转编码器、手转电机试锁轴力矩）不做。
 static uint16_t s_st_bits = 0;
 
 uint16_t sub_selftest_bits(void) { return s_st_bits; }
@@ -476,49 +482,38 @@ uint16_t sub_selftest_bits(void) { return s_st_bits; }
 void busy_self_test(void) {
     s_st_bits = 0;
     dbg_println("[ST] ------- sub self-test -------");
+    dbg_println("[ST] rule: only auto-decidable items count; watch-only items are printed but not counted");
 
-    // 1) 光电门：读一次电平（能读即算这一项可用；读数本身要对着现场看）
-    bool photo0 = sub_photo_present();
-    dbg_printf("[ST] photo gate : %s (PIN_PHOTO=%d)\n",
-               photo0 ? "CARD PRESENT (LOW)" : "clear (HIGH)", PIN_PHOTO);
-    if (photo0) dbg_println("[ST]   ^ 出牌口若确实没牌，检查光电门接线/供电");
-    s_st_bits |= SUB_ST_PHOTO;
+    // 0) 观察项：光电门静态电平。**判不出来**——没接传感器时 INPUT_PULLUP 也读高，
+    //    与"出牌口没牌"完全一样，所以只打印、不置位。
+    dbg_printf("[ST] photo gate : %s (PIN_PHOTO=%d) [watch only, not counted]\n",
+               sub_photo_present() ? "CARD PRESENT (LOW)" : "clear (HIGH)", PIN_PHOTO);
 
-    // 2) 摄像头校准：**先发校准指令，再动电机**。
-    //    顺序原因：电机一转牌堆就错位，摄像头按当前画面做的校准就白做了；
-    //    CAM_CALIB_WAIT_MS 既是等回应的时长，也保证校准先做在前面。
+    // 1) 摄像头校准：**可判定**。先发校准指令、再动电机——
+    //    电机一转牌堆就错位，摄像头按当前画面做的校准就白做了；
+    //    CAM_CALIB_WAIT_MS 既是等回应的时长，也保证校准排在电机前面。
     if (sub_camera_calibrate(CAM_CALIB_WAIT_MS)) s_st_bits |= SUB_ST_CAM_CALIB;
-    s_st_bits |= SUB_ST_CAM_UART;          // 上一步已经初始化过 Serial2
 
-    // 3) 发牌电机微动（可观察项：应看到/听到电机抖两下）
+    // 2) 观察项：发牌电机微动（应看到/听到抖两下）。没有电流/转速反馈，固件判不了，不置位。
     motor_self_test();
-    s_st_bits |= SUB_ST_MOTOR;
+    dbg_println("[ST] motor twitch: issued [watch only, not counted]");
 
-    // 4) 再看一次光电门：若刚才有牌被推动，这里能看到电平变化
-    bool photo1 = sub_photo_present();
-    if (photo1 != photo0) {
-        dbg_printf("[ST] photo gate : changed after motor test -> %s\n",
-                   photo1 ? "CARD PRESENT (LOW)" : "clear (HIGH)");
-    } else {
-        dbg_println("[ST] photo gate : unchanged after motor test");
-    }
-
-    // 5) 与底板串口：自检期间是否已收到底板数据（底板自检会周期发 CMD_STATUS_QUERY）
+    // 3) 与底板串口：**可判定**（自检期间是否已收到底板数据；底板自检会周期发 CMD_STATUS_QUERY）
     bool hostSeen = (s_rx_head != s_rx_tail);
     dbg_printf("[ST] host uart  : %s\n",
                hostSeen ? "data received" : "no data yet (底板可能还没启动)");
     if (hostSeen) s_st_bits |= SUB_ST_HOST_UART;
 
-    // 汇总
+    // 汇总：只列可判定项
     s_st_bits |= SUB_ST_DONE;
     {
-        const char    *names[] = { "motor", "cam-calib", "cam-uart", "photo", "host-uart" };
-        const uint16_t masks[] = { SUB_ST_MOTOR, SUB_ST_CAM_CALIB, SUB_ST_CAM_UART,
-                                   SUB_ST_PHOTO, SUB_ST_HOST_UART };
-        for (uint8_t i = 0; i < 5; i++) {
+        const char    *names[] = { "cam-calib", "host-uart" };
+        const uint16_t masks[] = { SUB_ST_CAM_CALIB, SUB_ST_HOST_UART };
+        for (uint8_t i = 0; i < 2; i++) {
             dbg_printf("[ST]   %-9s : %s\n", names[i], (s_st_bits & masks[i]) ? "OK" : "--");
         }
     }
+    dbg_println("[ST]   watch-only (not counted): motor twitch, photo level");
     dbg_printf("[ST] ------- done: bits=0x%04X -------\n", (unsigned)s_st_bits);
 }
 

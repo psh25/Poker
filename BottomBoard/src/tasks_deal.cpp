@@ -195,6 +195,21 @@ static void deal_fail(void) {
     xEventGroupSetBits(xStateEventGroup, BIT_DEAL_ERROR);
 }
 
+// ---- 外部事件触发的本局异常收口（P3 子板掉线 / P4 子板中途复位）----
+// 与 deal_fail() 的区别：这不是"某张牌发失败"，而是"通信对端没了/重启了"，
+// 所以除了记错误、发停机之外，还要**中止正在运行的底盘转动与各项等待**（motion_abort_request），
+// 否则要等最长 8s 的等待超时才收口，这段时间子板可能还在推牌/转盘（或底板白等一场）。
+// 收口后停在 DEALING、屏幕显示错误，等编码器按下重置 —— 与其它发牌错误同一个出口。
+void deal_abort_remote(const char *errMsg) {
+    if (state_get_current() != STATE_DEALING) return;   // 只有发牌中才需要收口
+    s_deal_error_active = true;
+    if (errMsg && *errMsg) deal_add_error(errMsg);
+    if (!s_sim_auto) proto_send(CMD_STOP, NULL, 0);     // 尽力让子板停下（掉线时发不出去也无害）
+    deal_update_screen("DEAL ERROR");
+    xEventGroupSetBits(xStateEventGroup, BIT_DEAL_ERROR);
+    motion_abort_request();                             // 中止底盘转动 + 让发牌任务的等待立即退出
+}
+
 // 方案四测试：自动补发事件参数（摄像头/光敏未就绪时使用）
 typedef struct {
     uint8_t  type;                  // 自动注入的事件类型

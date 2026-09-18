@@ -29,7 +29,7 @@ static TFT_eSPI tft;
 
 void display_init(void) {
     tft.init();
-    tft.setRotation(1);            // 横屏 160x128（若左右颠倒改为 3）
+    tft.setRotation(3);            // 横屏 160x128
 
 #if DISPLAY_DIAG_COLORS
     // 依次显示 红→绿→蓝→黑，各 300ms：
@@ -47,37 +47,33 @@ void display_init(void) {
 
 // 上电自检汇总屏：在 setup() 里由 self_test() 调用（此时显示任务还没启动，直接画）。
 // 显示 SELFTEST_SHOW_MS 后，显示任务收到 IDLE 命令会把它覆盖掉。
-// 位图含义见 hardware.h 的 BOT_ST_*（* = 需人眼/听声确认）。
+// ⚠️ 只显示"固件自己能判定"的项目（位定义见 hardware.h 的 BOT_ST_*）：
+//    屏幕色块 / 编码器电平 / 蓝牙广播 / 底盘微动都只能靠人看/听/搜，不进这张表，只列在下面提示里。
 void display_show_selftest(uint16_t bits) {
     tft.fillScreen(TFT_BLACK);
     tft.setTextSize(1);
 
-    bool link = (bits & BOT_ST_SUBUART) != 0;
-    bool chas = (bits & BOT_ST_CHASSIS) != 0;
+    const bool link = (bits & BOT_ST_SUBUART) != 0;
 
     tft.setTextColor(link ? TFT_GREEN : TFT_RED, TFT_BLACK);
     tft.setCursor(4, 2);
     tft.print("== SELF TEST ==");
 
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    int y = 18;
-    tft.setCursor(4, y); y += 11;
-    tft.printf("TFT     : %s", (bits & BOT_ST_TFT) ? "drawn *" : "SKIP");
-    tft.setCursor(4, y); y += 11;
-    tft.printf("CHASSIS : %s", chas ? "twitch *" : "FAIL");
-    tft.setCursor(4, y); y += 11;
-    tft.printf("HALL    : %s", (bits & BOT_ST_HALL) ? "read" : "SKIP");
-    tft.setCursor(4, y); y += 11;
-    tft.printf("ENC     : %s", (bits & BOT_ST_ENC) ? "read" : "SKIP");
-    tft.setCursor(4, y); y += 11;
-    tft.printf("BLE     : %s", (bits & BOT_ST_BLE) ? "on" : "SKIP");
-    tft.setCursor(4, y); y += 11;
     tft.setTextColor(link ? TFT_WHITE : TFT_RED, TFT_BLACK);
+    tft.setCursor(4, 20);
     tft.printf("SUB UART: %s", link ? "OK" : "NO LINK");
 
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setCursor(4, 36);
+    tft.print("only auto-checkable item");
+
     tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-    tft.setCursor(4, 112);
-    tft.print("* = check by eye/ear");
+    tft.setCursor(4, 56);
+    tft.print("watch by eye/ear/phone:");
+    tft.setCursor(4, 68);
+    tft.print("color bars, enc A/B/SW,");
+    tft.setCursor(4, 80);
+    tft.print("BLE (search), chassis");
 }
 
 static uint8_t s_drawn = 0;   // 当前屏幕上高亮的行

@@ -36,16 +36,17 @@
         class="mode-item {{selectedMode === item.id ? 'active' : ''}}"
         data-id="{{item.id}}" bindtap="onSelectMode">
         <view class="mode-name">{{item.name}}</view>
-        <view class="mode-desc">{{item.desc}} · {{item.totalCards}} 张 · 方案{{item.id + 1}}</view>
+        <view class="mode-desc">{{item.desc}}{{item.totalCards ? (' · ' + item.totalCards + ' 张') : ''}} · 方案{{item.id + 1}}</view>
       </view>
     </view>
-    <view wx:if="{{selectedMode === 3}}" class="custom-plan">
-      <view class="field-label">按发牌顺序填写目标牌堆（0~3，逗号分隔）</view>
+    <view wx:if="{{isCustomMode}}" class="custom-plan">
+      <view class="field-label">按发牌顺序填写目标牌堆（0~7，逗号分隔）</view>
       <textarea class="plan-input" value="{{customSequenceText}}" bindinput="onCustomSequenceInput"
-        placeholder="例如：0,1,2,3,0,1,2,3" auto-height maxlength="255" cursor-spacing="120"></textarea>
-      <view class="plan-hint">最多 64 张；编号 0、1、2、3 分别代表四个牌堆。</view>
+        placeholder="例如：0,1,2,3,0,1,2,3" auto-height maxlength="1024" cursor-spacing="120"></textarea>
+      <view class="plan-hint">最多 {{maxCards}} 张；编号 0~7 对应转盘上的 8 个实体牌堆位。</view>
     </view>
-    <button class="btn-ghost plan-submit" bindtap="sendMode">上传计划并确认（不开始发牌）</button>
+    <view wx:if="{{boardPlanMode}}" class="tip">该方案由底板自行生成计划（分拣要靠摄像头按牌面分堆、旋转测试只转不发），手机只下发「选方案 + 确认 + 发牌」。</view>
+    <button class="btn-ghost plan-submit" bindtap="sendMode">{{boardPlanMode ? '选方案并确认（不下发计划）' : '上传计划并确认（不开始发牌）'}}</button>
     <view class="tip">上传成功后再点下方“开始发牌”才会执行。</view>
   </view>
 

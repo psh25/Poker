@@ -1,5 +1,5 @@
 import { bleManager, BleConnState } from '../../utils/ble'
-import { MODES } from '../../config/index'
+import { MODES, MAX_PILES, MAX_CARDS_PER_GAME, ModeDef } from '../../config/index'
 import { HOST_CMD, STATE_NAMES, decodeEvent } from '../../utils/protocol'
 import { cardIsRed, cardName } from '../../utils/cards'
 import { store, requestSegment, markMoveApplied } from '../../utils/store'
@@ -23,20 +23,26 @@ function delay(ms: number): Promise<void> {
 
 function parseCustomSequence(raw: string): number[] {
   const parts = raw.split(/[\s,，]+/).filter((s) => s.length > 0)
-  if (!parts.length || parts.length > 64) throw new Error('自定义顺序需要 1~64 个牌堆号')
+  if (!parts.length || parts.length > MAX_CARDS_PER_GAME) {
+    throw new Error('自定义顺序需要 1~' + MAX_CARDS_PER_GAME + ' 个牌堆号')
+  }
   const sequence = parts.map((s) => Number(s))
   for (const deck of sequence) {
-    if (!Number.isInteger(deck) || deck < 0 || deck >= 4) {
-      throw new Error('牌堆号只能是 0、1、2、3')
+    if (!Number.isInteger(deck) || deck < 0 || deck >= MAX_PILES) {
+      throw new Error('牌堆号只能是 0~' + (MAX_PILES - 1))
     }
   }
   return sequence
 }
 
-function selectedSequence(modeId: number, customText: string): number[] {
-  const mode = MODES.find((m) => m.id === modeId)
-  if (!mode) throw new Error('未知发牌模式')
-  return mode.id === 3 ? parseCustomSequence(customText) : mode.sequence.slice()
+// 某个模式的"逐张目标牌堆"序列；boardPlan 模式由底板自己生成（这里返回空数组）
+function selectedSequence(mode: ModeDef, customText: string): number[] {
+  return mode.custom ? parseCustomSequence(customText) : mode.sequence.slice()
+}
+
+// 按 id 取模式（id 与底板方案索引一一对应）
+function findMode(id: number): ModeDef | undefined {
+  return MODES.find((m) => m.id === id)
 }
 
 Page({
@@ -48,6 +54,9 @@ Page({
     showDeviceList: false,
     selectedMode: 0,
     modes: MODES,
+    isCustomMode: false,        // 选中的是"自定义"（显示牌堆序列输入框）
+    boardPlanMode: false,       // 选中的方案由底板自己生成计划（不下发 0x14/15/16）
+    maxCards: MAX_CARDS_PER_GAME,
     customSequenceText: '0,1,2,3',
     cloudOk: false,
     boardState: 0,
@@ -180,8 +189,13 @@ Page({
 
   onSelectMode(e: any) {
     const selectedMode = Number(e.currentTarget.dataset.id)
-    const mode = MODES.find((m) => m.id === selectedMode)
-    this.setData({ selectedMode, dealTotal: mode ? mode.totalCards : 0 })
+    const mode = findMode(selectedMode)
+    this.setData({
+      selectedMode,
+      dealTotal: mode ? mode.totalCards : 0,
+      isCustomMode: !!(mode && mode.custom),
+      boardPlanMode: !!(mode && mode.boardPlan),
+    })
   },
 
   onCustomSequenceInput(e: any) {
@@ -189,9 +203,10 @@ Page({
   },
 
   // 分帧上传完整发牌计划：0x14 开始 → 0x15 数据块 → 0x16 提交。
+  // pileCount 报 MAX_PILES(8)：底板有 8 个实体牌堆位，报小了 4~7 号堆会被底板拒绝。
   async sendDealPlan(scheme: number, sequence: number[]) {
     const total = sequence.length
-    await bleManager.writeFrame(HOST_CMD.PLAN_BEGIN, [scheme, total & 0xff, (total >> 8) & 0xff, 4])
+    await bleManager.writeFrame(HOST_CMD.PLAN_BEGIN, [scheme, total & 0xff, (total >> 8) & 0xff, MAX_PILES])
     const chunkSize = 30
     for (let offset = 0; offset < total; offset += chunkSize) {
       await bleManager.writeFrame(HOST_CMD.PLAN_CHUNK, [offset].concat(sequence.slice(offset, offset + chunkSize)))
@@ -199,57 +214,64 @@ Page({
     await bleManager.writeFrame(HOST_CMD.PLAN_COMMIT)
   },
 
-  // 发送“完整计划 + 选方案 + 确认”
+  // 发送“选方案 +（可选）完整计划 + 确认”
+  // boardPlan 方案（分拣 / 旋转测试）不下发计划：由底板按自身预设生成
   async sendMode() {
     if (bleManager.state !== 'connected') { wx.showToast({ title: '先连接发牌机', icon: 'none' }); return }
-    const m = this.data.selectedMode
+    const mode = findMode(this.data.selectedMode)
+    if (!mode) { wx.showToast({ title: '未知发牌模式', icon: 'none' }); return }
     let sentCount = 0
     try {
-      const sequence = selectedSequence(m, this.data.customSequenceText)
+      const sequence = selectedSequence(mode, this.data.customSequenceText)
       sentCount = sequence.length
-      await bleManager.writeFrame(HOST_CMD.SELECT_SCHEME, [m])
-      await this.sendDealPlan(m, sequence)
+      await bleManager.writeFrame(HOST_CMD.SELECT_SCHEME, [mode.id])
+      if (!mode.boardPlan) await this.sendDealPlan(mode.id, sequence)
       await bleManager.writeFrame(HOST_CMD.CONFIRM)
-      this.setData({ dealTotal: sentCount })
+      this.setData({ dealTotal: mode.boardPlan ? 0 : sentCount })
     } catch (e) {
       const msg = e instanceof Error ? e.message : '发牌计划无效'
       wx.showToast({ title: msg, icon: 'none' })
       return
     }
-    wx.showToast({ title: '方案和 ' + sentCount + ' 张计划已发送', icon: 'success' })
+    wx.showToast({
+      title: mode.boardPlan ? ('已选方案 ' + (mode.id + 1) + ' 并确认')
+                            : ('方案和 ' + sentCount + ' 张计划已发送'),
+      icon: 'success',
+    })
   },
 
-  // 开始发牌：复位 → 选方案 → 上传完整计划 → 确认 → 发牌。
+  // 开始发牌：复位 → 选方案 →（非 boardPlan 时上传完整计划）→ 确认 → 发牌。
   async startDeal() {
     if (bleManager.state !== 'connected') { wx.showToast({ title: '先连接发牌机', icon: 'none' }); return }
     if (this.data.dealing) return
 
-    const m = this.data.selectedMode
+    const mode = findMode(this.data.selectedMode)
+    if (!mode) { wx.showToast({ title: '未知发牌模式', icon: 'none' }); return }
     let sequence: number[]
     try {
-      sequence = selectedSequence(m, this.data.customSequenceText)
+      sequence = selectedSequence(mode, this.data.customSequenceText)
     } catch (e) {
       const msg = e instanceof Error ? e.message : '发牌计划无效'
       wx.showToast({ title: msg, icon: 'none' })
       return
     }
 
-    store.startGame(m)
+    store.startGame(mode.id)
     this.setData({
       dealing: true,
       dealDone: false,
       dealCount: 0,
-      dealTotal: sequence.length,
+      dealTotal: mode.boardPlan ? 0 : sequence.length,
       dealPercent: 0,
       dealtCards: [],
       lastCardText: '',
     })
-    wx.showLoading({ title: '发送发牌计划…' })
+    wx.showLoading({ title: mode.boardPlan ? '发送指令…' : '发送发牌计划…' })
     try {
       await bleManager.writeFrame(HOST_CMD.RESET)
       await delay(600)
-      await bleManager.writeFrame(HOST_CMD.SELECT_SCHEME, [m])
-      await this.sendDealPlan(m, sequence)
+      await bleManager.writeFrame(HOST_CMD.SELECT_SCHEME, [mode.id])
+      if (!mode.boardPlan) await this.sendDealPlan(mode.id, sequence)
       await bleManager.writeFrame(HOST_CMD.CONFIRM)
       await bleManager.writeFrame(HOST_CMD.DEAL)
     } catch (e) {

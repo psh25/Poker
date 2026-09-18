@@ -18,6 +18,7 @@
 #include "display.h"
 #include "ble_comms.h"
 #include "state_machine.h"
+#include "tasks_deal.h"
 
 // ---- 底盘步进（AccelStepper，参考 重要信息/步进电机/main.cpp）----
 static AccelStepper g_chassis(AccelStepper::DRIVER, PIN_TMC_STEP, PIN_TMC_DIR);
@@ -364,10 +365,15 @@ bool chassis_rotate_turns(int32_t turns) {
 }
 
 // ================= 外设自检（架构 v2 第一章 / 第八章；方案见 重要信息/自检流程方案.md）=================
-// 只做**不需要人配合**的项目，分两类：
-//   自动判定：引脚电平读回、BLE 广播、与子板串口握手（发 CMD_STATUS_QUERY 等应答）；
-//   人眼/听声确认：屏幕色块、底盘微动 —— 这类没有数字反馈，只能看/听（位图置 1 = 动作已执行）。
-// 交互项（转/按编码器、手转电机试锁轴力矩、拿磁铁试霍尔）不在开机自检里做。
+// 2026-09-17 修订：**结果位图只收"固件自己能判定成败"的项目**。
+//   判定标准：固件能不能**不依赖人**给出通过/不通过。做不到的一律不进结果，只打印。
+//   按这个标准，底板只剩两项：① 与子板串口握手（真正的请求/应答往返）② 流程执行完毕。
+//   以下都被降级为观察项（以前无条件报 OK，属于假通过）：
+//     · 屏幕色块         —— 要人看颜色/顺序；
+//     · 编码器 A/B/SW    —— INPUT_PULLUP 下"没接线"和"空闲高"读数完全一样，固件判不出来；
+//     · 蓝牙广播         —— "手机能搜到"要人找，协议栈内部状态也证明不了射频在工作；
+//     · 底盘微动 ±3°     —— 没有霍尔/编码器反馈，只能听/看电机转不转。
+//   交互项（转/按编码器、手转电机试锁轴力矩）需人工配合，不做。
 static uint16_t s_selftestBits = 0;      // 最近一次自检结果位图（BOT_ST_*）
 
 // 自检各分项（实现见本函数下方）
@@ -377,32 +383,25 @@ static bool selftest_sub_link(uint16_t *outBits);
 void self_test(void) {
     s_selftestBits = 0;
     Serial.println("[ST] ======== self test ========");
+    Serial.println("[ST] 规则：只有固件能自己判定成败的项目进结果；其余只打印（watch only）");
 
-    // 1) 屏幕：display_init() 已画过 红→绿→蓝→黑 色块（人眼确认颜色与顺序）
-    Serial.println("[ST] tft      : color bars drawn -> 人眼确认 红/绿/蓝/黑 顺序正确");
-    s_selftestBits |= BOT_ST_TFT;
-
-    // 2) 编码器引脚：读一次空闲电平（自动项；旋转/按键本身要人配合，不在开机自检里做）
-    int ea = digitalRead(PIN_ENC_A), eb = digitalRead(PIN_ENC_B), esw = digitalRead(PIN_ENC_SW);
-    Serial.printf("[ST] encoder  : A=%d B=%d SW=%d（空闲应全为 1；SW=0 说明按键被按住或短路）\n",
-                  ea, eb, esw);
-    s_selftestBits |= BOT_ST_ENC;
-
-    // 3) 霍尔：已删除该功能
-
-    // 4) 蓝牙：ble_init() 已在 setup 里执行（广播已开），手机搜到即算通过
-    Serial.printf("[ST] ble      : advertising as '%s'%s\n",
+    // ---- 观察项：打印出来给人看，不参与判定 ----
+    // 屏幕色块已在 display_init() 画过（红→绿→蓝→黑），固件不知道"人看到了什么"。
+    Serial.println("[ST] tft      : color bars drawn (红→绿→蓝→黑) [watch only]");
+    {
+        int ea = digitalRead(PIN_ENC_A), eb = digitalRead(PIN_ENC_B), esw = digitalRead(PIN_ENC_SW);
+        Serial.printf("[ST] enc      : A=%d B=%d SW=%d [watch only]\n", ea, eb, esw);
+    }
+    Serial.printf("[ST] ble      : advertising as '%s'%s [watch only - 需手机搜索确认]\n",
                   BLE_DEVICE_NAME, ble_connected() ? " (connected)" : "");
-    s_selftestBits |= BOT_ST_BLE;
 
-    // 5) SD 卡：未接线 → 跳过（不算失败）
-    Serial.println("[ST] sd       : skipped（未接线）");
+    // ---- 观察项：底盘步进微动（±SELFTEST_CHASSIS_DEG，净位移 0，不动转盘零点）----
+    //    为什么不计入结果：没有霍尔/编码器反馈，固件只能确认"脉冲发完了"，无法证明转盘真的转了。
+    if (!selftest_chassis()) {
+        Serial.println("[ST] chassis  : twitch 未能完成（查驱动供电 / EN / STEP 接线）[watch only]");
+    }
 
-    // 6) 底盘步进微动（可观察项；净位移 0，不动转盘零点）
-    if (selftest_chassis()) s_selftestBits |= BOT_ST_CHASSIS;
-    else Serial.println("[ST] chassis  : twitch FAILED（查驱动供电 / EN / STEP 接线）");
-
-    // 7) 与子板串口握手（自动判定）
+    // ---- 判定项：与子板串口握手（发 CMD_STATUS_QUERY 等回帧，真正的请求/应答往返）----
     uint16_t subBits = 0;
     if (selftest_sub_link(&subBits)) s_selftestBits |= BOT_ST_SUBUART;
 
@@ -410,7 +409,7 @@ void self_test(void) {
     Serial.printf("[ST] ======== done: bits=0x%04X ========\n", (unsigned)s_selftestBits);
     selftest_report();
 
-    // 8) 屏幕汇总：显示 SELFTEST_SHOW_MS 后，由显示任务覆盖成 IDLE 屏
+    // 屏幕汇总：显示 SELFTEST_SHOW_MS 后，由显示任务覆盖成 IDLE 屏
     display_show_selftest(s_selftestBits);
     delay(SELFTEST_SHOW_MS);
 }
@@ -419,40 +418,37 @@ void self_test(void) {
 uint16_t selftest_bits(void) { return s_selftestBits; }
 
 // 自检结果汇总打印；CLI `selftest` 也走这里（不动作、不阻塞）
+// ⚠️ 只列"固件自己能判定"的项目（见本文件自检章节头注释）；观察项单独一行说明，不混进结果里。
 void selftest_report(void) {
     uint16_t b = s_selftestBits;
-    Serial.printf("[ST] ==== selftest bits=0x%04X ====\n", (unsigned)b);
-    Serial.printf("[ST]   tft      : %s\n", (b & BOT_ST_TFT)     ? "drawn *" : "SKIP");
-    Serial.printf("[ST]   chassis  : %s\n", (b & BOT_ST_CHASSIS) ? "twitch *" : "FAIL");
-    Serial.printf("[ST]   hall     : %s\n", (b & BOT_ST_HALL)    ? "read" : "SKIP");
-    Serial.printf("[ST]   encoder  : %s\n", (b & BOT_ST_ENC)     ? "read" : "SKIP");
-    Serial.printf("[ST]   ble      : %s\n", (b & BOT_ST_BLE)     ? "on" : "SKIP");
+    Serial.printf("[ST] ==== selftest bits=0x%04X（只含可判定项）====\n", (unsigned)b);
     Serial.printf("[ST]   sub uart : %s\n", (b & BOT_ST_SUBUART) ? "OK" : "NO LINK");
-    Serial.printf("[ST]   sd       : %s\n", (b & BOT_ST_SD)      ? "ok" : "skipped (未接线)");
     Serial.printf("[ST]   done     : %s\n", (b & BOT_ST_DONE)    ? "yes" : "no");
-    Serial.println("[ST]   (* = 需人眼/听声确认)");
+    Serial.println("[ST]   观察项（不计入结果，需人看/听/搜）：屏幕色块、编码器 A/B/SW 电平、"
+                   "蓝牙（手机搜索）、底盘微动 ±3°");
 
     // 现在就能读的实时状态（复检时不动作、不阻塞）
     Serial.printf("[ST] live: enc A/B/SW=%d/%d/%d ble=%s sub=%s\n",
                   digitalRead(PIN_ENC_A), digitalRead(PIN_ENC_B), digitalRead(PIN_ENC_SW),
                   ble_connected() ? "connected" : "advertising",
                   sub_comm_online() ? "ONLINE" : "OFFLINE");
-    Serial.println("[ST] 交互项（转/按编码器、手转电机试锁轴力矩、拿磁铁试霍尔）需人工配合，未纳入开机自检");
+    Serial.println("[ST] 交互项（转/按编码器、手转电机试锁轴力矩）需人工配合，未纳入开机自检");
 }
 
-// 底盘微动：顶层 ±SELFTEST_CHASSIS_DEG 度各一次，净位移 0。
-// 净位移 0 的意义：既能让电机/驱动真的动一下（可观察），又不会把转盘挪走——
+// 底盘微动：顶层 ±SELFTEST_CHASSIS_DEG 度各一次，净位移 0。**观察项，不进结果位图**。
+// 净位移 0 的意义：既能让电机/驱动真的动一下（可听/可看），又不会把转盘挪走——
 // hall_homing() 目前就是"以开机位置为零点"，转盘不能动。
+// 返回值只用于打印提示：固件没有转速/位置反馈，无法判定"电机真的转了"。
 static bool selftest_chassis(void) {
 #if SELFTEST_CHASSIS_MOVE
     long steps = (long)((double)SELFTEST_CHASSIS_DEG * (double)CHASSIS_STEPS_PER_REV *
                         (double)CHASSIS_GEAR_NUM /
                         (360.0 * (double)CHASSIS_GEAR_DEN) + 0.5);
     if (steps < 1) steps = 1;
-    Serial.printf("[ST] chassis: twitch +/- %.1f top-deg (%ld motor steps each way)\n",
+    Serial.printf("[ST] chassis: twitch +/- %.1f top-deg (%ld motor steps each way) [watch only]\n",
                   (double)SELFTEST_CHASSIS_DEG, steps);
     chassis_enable_driver();
-    // 去程 + 回程都到位才算通过（走不动说明驱动供电 / 接线 / EN 有问题）
+    // 去程 + 回程都跑完才返回 true（跑不动说明驱动供电 / 接线 / EN 可能有问题）
     return chassis_run_relative(steps) && chassis_run_relative(-steps);
 #else
     Serial.println("[ST] chassis: skipped (SELFTEST_CHASSIS_MOVE=0)");
@@ -468,21 +464,23 @@ static volatile bool    s_stGotReady = false;
 static volatile uint8_t s_stReadyBits[2] = { 0, 0 };
 
 static void selftest_rx_cb(const proto_frame_t *f) {
+    // 与 protocol.cpp 的底板 guard 一致：**只有子板事件帧（0x81~0x8F）才算链路通**，
+    // 命令回波（0x01~0x06）不算——否则 TX/RX 回环时自检会误报"子板链路 OK"。
+    if (!proto_is_sub_event(f->type)) return;
     s_stGotFrame = true;
     if (f->type == EVT_READY) {
         s_stGotReady = true;
         if (f->len >= 2) { s_stReadyBits[0] = f->data[0]; s_stReadyBits[1] = f->data[1]; }
     }
-    proto_note_sub_rx();   // 收到即视为“在线”，让 sub_comm_online() 立刻生效
+    proto_note_sub_rx();   // 收到子板事件即视为“在线”，让 sub_comm_online() 立刻生效
 }
 
 // 打印子板自检位图（SUB_ST_*，定义见 protocol.h）
+// ⚠️ 位图里只有子板**能自动判定**的项目（摄像头校准回应、与底板串口、流程完成）；
+//    电机微动 / 光电门静态电平是观察项，子板不置位，这里也就不会显示。
 static void selftest_print_sub_bits(uint16_t b) {
-    Serial.printf("[ST]   sub bits=0x%04X |%s%s%s%s%s%s\n", (unsigned)b,
-                  (b & SUB_ST_MOTOR)     ? " motor"     : "",
+    Serial.printf("[ST]   sub bits=0x%04X |%s%s%s\n", (unsigned)b,
                   (b & SUB_ST_CAM_CALIB) ? " cam-calib" : "",
-                  (b & SUB_ST_CAM_UART)  ? " cam-uart"  : "",
-                  (b & SUB_ST_PHOTO)     ? " photo"     : "",
                   (b & SUB_ST_HOST_UART) ? " host-uart" : "",
                   (b & SUB_ST_DONE)      ? " done"      : "");
     if (b & SUB_ST_CAM_CALIB) Serial.println("[ST]   ^ 摄像头已回应校准指令（校准已开始）");
@@ -562,6 +560,8 @@ void busy_deal_step(const char *step) {
 //   差别只是"代码跑多快"，而本工程所有对外时序都是 ms 级、由 millis() 计量。
 static uint32_t s_cpuMhz = 0;   // 已设置的主频（0 = 还没设过；以芯片实际返回值为准）
 
+// 设置 CPU 主频。⚠️ 当前 BOT_CPU_SCALE_ENABLE=0（底板降频已关闭），本函数不在流程中被调用，
+// 保留备用（要恢复降频：app_config.h 把该宏改回 1 即可）。
 void power_set_cpu(uint32_t mhz) {
     if (mhz == 0 || mhz == s_cpuMhz) return;
     if (!setCpuFrequencyMhz(mhz)) {
@@ -590,6 +590,14 @@ void power_manage_tick(void) {
     // 需要性能档：不在 IDLE（发牌中 / 一局已发完等交互）、或蓝牙已连接（要保证响应速度）
     const bool needPerf = (st != STATE_IDLE) || ble_connected();
     power_set_cpu(needPerf ? BOT_CPU_PERF_MHZ : BOT_CPU_IDLE_MHZ);
+#else
+    // 降频已关闭：开机后确认一次实际主频，便于核对烧进去的固件是不是关掉了降频
+    static bool s_cpuNoticeDone = false;
+    if (!s_cpuNoticeDone) {
+        s_cpuNoticeDone = true;
+        Serial.printf("[PWR] cpu scaling DISABLED -> running at %u MHz (apb %u MHz)\n",
+                      (unsigned)getCpuFrequencyMhz(), (unsigned)(getApbFrequency() / 1000000UL));
+    }
 #endif
 }
 
@@ -620,5 +628,18 @@ void busy_state_exit(uint8_t state) {
 
 void busy_monitor(void) {
     power_manage_tick();   // 低功耗巡检：底盘驱动断电 + CPU 降频/升频
-    // TODO: 电机到位/超时状态巡检、子板心跳、告警上报
+
+    // ---- P3：子板掉线处置（只在"在线 → 掉线"的跳变沿做一次）----
+    // 以前掉线只打印一行、且只在开局前拒绝新局；进行中的一局要等到各项等待超时（最长 8s）才收口，
+    // 这段时间子板可能还在推牌/转盘。现在：判定掉线且不在 IDLE，立刻按错误收口
+    //（记错误 + 屏幕提示 + 尽力发 CMD_STOP + 中止底盘转动与等待，等编码器按下重置）。
+    static bool s_prevOnline = false;
+    const bool online = sub_comm_online();
+    if (s_prevOnline && !online && state_get_current() != STATE_IDLE) {
+        Serial.println("[MON] sub board LOST while not IDLE -> abort current round");
+        deal_abort_remote("sub offline");
+    }
+    s_prevOnline = online;
+
+    // TODO: 电机到位/超时状态巡检、告警上报
 }

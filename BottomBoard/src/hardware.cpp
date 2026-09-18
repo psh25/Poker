@@ -18,6 +18,7 @@
 #include "display.h"
 #include "ble_comms.h"
 #include "state_machine.h"
+#include "tasks_deal.h"
 
 // ---- 底盘步进（AccelStepper，参考 重要信息/步进电机/main.cpp）----
 static AccelStepper g_chassis(AccelStepper::DRIVER, PIN_TMC_STEP, PIN_TMC_DIR);
@@ -463,12 +464,15 @@ static volatile bool    s_stGotReady = false;
 static volatile uint8_t s_stReadyBits[2] = { 0, 0 };
 
 static void selftest_rx_cb(const proto_frame_t *f) {
+    // 与 protocol.cpp 的底板 guard 一致：**只有子板事件帧（0x81~0x8F）才算链路通**，
+    // 命令回波（0x01~0x06）不算——否则 TX/RX 回环时自检会误报"子板链路 OK"。
+    if (!proto_is_sub_event(f->type)) return;
     s_stGotFrame = true;
     if (f->type == EVT_READY) {
         s_stGotReady = true;
         if (f->len >= 2) { s_stReadyBits[0] = f->data[0]; s_stReadyBits[1] = f->data[1]; }
     }
-    proto_note_sub_rx();   // 收到即视为“在线”，让 sub_comm_online() 立刻生效
+    proto_note_sub_rx();   // 收到子板事件即视为“在线”，让 sub_comm_online() 立刻生效
 }
 
 // 打印子板自检位图（SUB_ST_*，定义见 protocol.h）
@@ -556,6 +560,8 @@ void busy_deal_step(const char *step) {
 //   差别只是"代码跑多快"，而本工程所有对外时序都是 ms 级、由 millis() 计量。
 static uint32_t s_cpuMhz = 0;   // 已设置的主频（0 = 还没设过；以芯片实际返回值为准）
 
+// 设置 CPU 主频。⚠️ 当前 BOT_CPU_SCALE_ENABLE=0（底板降频已关闭），本函数不在流程中被调用，
+// 保留备用（要恢复降频：app_config.h 把该宏改回 1 即可）。
 void power_set_cpu(uint32_t mhz) {
     if (mhz == 0 || mhz == s_cpuMhz) return;
     if (!setCpuFrequencyMhz(mhz)) {
@@ -584,6 +590,14 @@ void power_manage_tick(void) {
     // 需要性能档：不在 IDLE（发牌中 / 一局已发完等交互）、或蓝牙已连接（要保证响应速度）
     const bool needPerf = (st != STATE_IDLE) || ble_connected();
     power_set_cpu(needPerf ? BOT_CPU_PERF_MHZ : BOT_CPU_IDLE_MHZ);
+#else
+    // 降频已关闭：开机后确认一次实际主频，便于核对烧进去的固件是不是关掉了降频
+    static bool s_cpuNoticeDone = false;
+    if (!s_cpuNoticeDone) {
+        s_cpuNoticeDone = true;
+        Serial.printf("[PWR] cpu scaling DISABLED -> running at %u MHz (apb %u MHz)\n",
+                      (unsigned)getCpuFrequencyMhz(), (unsigned)(getApbFrequency() / 1000000UL));
+    }
 #endif
 }
 
@@ -614,5 +628,18 @@ void busy_state_exit(uint8_t state) {
 
 void busy_monitor(void) {
     power_manage_tick();   // 低功耗巡检：底盘驱动断电 + CPU 降频/升频
-    // TODO: 电机到位/超时状态巡检、子板心跳、告警上报
+
+    // ---- P3：子板掉线处置（只在"在线 → 掉线"的跳变沿做一次）----
+    // 以前掉线只打印一行、且只在开局前拒绝新局；进行中的一局要等到各项等待超时（最长 8s）才收口，
+    // 这段时间子板可能还在推牌/转盘。现在：判定掉线且不在 IDLE，立刻按错误收口
+    //（记错误 + 屏幕提示 + 尽力发 CMD_STOP + 中止底盘转动与等待，等编码器按下重置）。
+    static bool s_prevOnline = false;
+    const bool online = sub_comm_online();
+    if (s_prevOnline && !online && state_get_current() != STATE_IDLE) {
+        Serial.println("[MON] sub board LOST while not IDLE -> abort current round");
+        deal_abort_remote("sub offline");
+    }
+    s_prevOnline = online;
+
+    // TODO: 电机到位/超时状态巡检、告警上报
 }

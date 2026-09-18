@@ -56,7 +56,7 @@ for b in [type, len] + data:
 
 | type | 名称 | data | 说明 |
 |------|------|------|------|
-| 0x81 | `EVT_READY` | `[bitsLo, bitsHi]`（2 字节位图，见 4.2） | 自检完成（开机 + `CMD_SELF_TEST` 复检都发） |
+| 0x81 | `EVT_READY` | `[bitsLo, bitsHi]`（2 字节位图，见 4.2） | 自检完成（开机 + `CMD_SELF_TEST` 复检都发）；**底板非 IDLE 时收到 = 子板中途重启** → 收口本局（见 10.2 注） |
 | 0x82 | `EVT_CARD_OUT` | 无 | 光敏检测到一张牌发出 |
 | 0x83 | `EVT_CARD_VALUE` | `[card, src]`：card = 牌面编码 0~55（见 4.1），src = 来源 | 牌面识别结果 |
 | 0x84 | `EVT_DEAL_DONE` | 无 | 单张发牌流程完成 |
@@ -115,6 +115,11 @@ for b in [type, len] + data:
 - 子板每收到一帧**校验通过**的命令：串口打印 `[SUB] RX: cmd=0x.. len=.. data:..`，回发 `EVT_ACK`（数据 = 原 type + 原 data），再打印 `[SUB] TX: ACK cmd=0x..`。
 - 底板收到 `EVT_ACK`：串口打印 `[BOT] SUB-ACK: cmd=0x..`，**仅调试，不进业务队列**。
 - 子板侧用串口日志直观观察链路：收到字节与解析结果会打印 `[SUB] RX: ...`，回发成功打印 `[SUB] TX: ACK ...`。
+- **两侧各有一道 guard，用于掐掉"回环自激"**（正常接线时都不应该出现）：
+  - **子板侧**：RX 上出现事件/回执类型（`0x80+`）时忽略并打印 `[SUB] guard: ignore type=0x..`，**不回 ACK**，避免"ACK 套 ACK"越滚越多；
+  - **底板侧**（2026-09-18 加入）：RX 上出现命令类型（`0x01~0x06`）/`0x00`/`0x90+` 时忽略并打印 `[BOT] guard: drop type=0x..`（只打前 3 次），
+    **不刷新"子板在线"、不进事件队列**，避免回环造成"子板断电也显示 ONLINE"和队列被回波挤满（累计数见 CLI `subboard`）。
+  - 一旦看到 guard：先查两根信号线是否短接、是否共地、是否有别的设备往这条线上发帧。
 - 示例：底板发 `A5 03 00 3F AA`（查询状态）→ 子板回 `A5 88 01 03 .. AA`（ACK，数据 0x03 表示“确认的是 0x03 命令”）。回显 deal 命令的 ACK 帧为 `A5 88 01 01 48 AA`。
 
 ## 6. 调试 CLI（电脑串口 115200）
@@ -125,7 +130,7 @@ for b in [type, len] + data:
 help                                # 帮助
 state                               # 打印底板当前状态机状态
 dealstart | stop | reset | confirm  # 启动发牌 / 停机 / 复位 / 确认方案
-subboard                            # 打印子板在线状态与心跳时间
+subboard                            # 打印子板在线状态、距上次子板事件的时间、被 guard 丢弃的帧数
 sub <cmd> [hex data...]             # 底板 → 子板（自动组帧 + 自动算 CRC）
 sim <type> [hex data...]            # 模拟子板 → 底板事件（本地喂给协议分发）
 subsim [on|off]                     # 无子板模式：底板自己模拟子板事件（旧别名 simauto）
@@ -235,8 +240,15 @@ help | dealstart | stop | statusquery | selftest | reset | camcapture | camcalib
 | 0x10 | 选择方案（仅 IDLE 有效） | [0]=0~9（方案表见 `deal_config.h`） | `select N` / `game use N` |
 | 0x11 | 确认方案（两段式第一步） | 无 | `confirm` |
 
-> 心跳：底板监控任务每 `COMM_HEARTBEAT_MS`（1s）发一次板间 `CMD_STATUS_QUERY`（0x03），
-> 子板回 `EVT_STATUS`（0x89）；`COMM_DEAD_TIMEOUT_MS`（3s）内没有任何子板帧即判定掉线（`[MON] sub board OFFLINE`）。
+> 心跳：底板监控任务每 `COMM_HEARTBEAT_MS`（1s）发一次板间 `CMD_STATUS_QUERY`（0x03），子板回 `EVT_STATUS`（0x89）。
+> **在线证据只有"子板事件帧"（0x81~0x8F）**——`proto_is_sub_event()`；命令帧（0x01~0x06）/0x00/0x90+ 出现
+> 在底板的 RX 上说明这条线有回环或外来帧，会被底板 guard 丢弃（不刷新在线、不进队列，CLI `subboard` 显示累计数）。
+> `COMM_DEAD_TIMEOUT_MS`（**8s**，必须大于子板阻塞自检的 ≈3.6s）内没有任何子板事件帧即判定掉线（`[MON] sub board OFFLINE`）。
+>
+> **判掉线之后会做什么（v4.3）**：不在 IDLE 时**主动收口本局**——`deal_abort_remote()` 会记错误（屏幕显示）、
+> 尽力发一帧 `CMD_STOP`、并中止底盘转动与各项等待，最后停在 DEALING 等**编码器按下重置**；不再干等最长 8s 的超时。
+> 同理，**非 IDLE 时收到 `EVT_READY`** 说明子板自己重启了（用"自检请求闩锁"排除 `CMD_SELF_TEST` 的复检上报），
+> 也按这条收口（错误信息为 `sub reset`）。
 
 ### 10.3 底板 → 主机事件
 

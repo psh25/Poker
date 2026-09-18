@@ -124,13 +124,17 @@ static void sub_debug_cli_process(const char *line) {
         return;
     }
 
-    // subboard：子板心跳状态（在线/离线 + 距上次收到子板帧的毫秒数）
+    // subboard：子板心跳状态（在线/离线 + 距上次收到子板事件帧的毫秒数 + 被 guard 丢弃的帧数）
     if (strcmp(line, "subboard") == 0) {
         bool on = sub_comm_online();
         uint32_t last = sub_comm_last_rx_ms();
-        Serial.printf("[CLI] subboard: %s (last rx %lu ms ago)\n",
+        uint16_t foreign = sub_comm_foreign_frames();
+        Serial.printf("[CLI] subboard: %s (last sub event %lu ms ago)\n",
                       on ? "ONLINE" : "OFFLINE",
                       (unsigned long)(millis() - last));
+        Serial.printf("[CLI]   在线只认子板事件帧 0x81~0x8F；被丢弃的非子板帧 = %u%s\n",
+                      (unsigned)foreign,
+                      foreign ? "（>0：这条线有回环或外来帧，查 TX/RX 是否短接）" : "");
         return;
     }
 
@@ -438,6 +442,12 @@ static void sub_debug_cli_process(const char *line) {
         uint8_t type = 0;
         if (!type_s || !sub_debug_lookup_type(type_s, &type)) {
             Serial.println("[CLI] sim: 未知类型（type 'help'）");
+            return;
+        }
+        // sim 只用于模拟"子板 → 底板"的事件帧（0x81~0x8F）：命令类型没有意义，
+        // 而且会被底板的 guard 当成回环丢掉（见 protocol.cpp 的 proto_on_event）。
+        if (!proto_is_sub_event(type)) {
+            Serial.println("[CLI] sim: 只能注入子板事件帧 0x81~0x8F（命令类请用 `sub <cmd>`）");
             return;
         }
         uint8_t data[PROTO_MAX_DATA];

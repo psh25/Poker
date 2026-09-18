@@ -80,6 +80,11 @@ typedef enum {
 } proto_cmd_t;
 
 // 子板 → 底板：事件（0x81~0x8F）
+// ⚠️ 这个范围是**唯一**的"子板在线证据"：只有落在这个区间里的帧，才说明子板真的在应答
+//    （见 protocol.cpp 的 proto_on_event 与 sub_comm_online）。范围外的帧一律丢弃——
+//    底板自己发出的命令（0x01~0x06）出现在 RX 上只可能是回环（TX/RX 短接）或外来帧。
+#define PROTO_SUB_EVT_MIN   0x81
+#define PROTO_SUB_EVT_MAX   0x8F
 typedef enum {
     EVT_READY         = 0x81,  // 上电自检完成
     EVT_CARD_OUT      = 0x82,  // 光敏检测到一张牌发出
@@ -143,7 +148,14 @@ size_t proto_build_frame(uint8_t *buf, const proto_frame_t *frame);
 void proto_write_frame(const proto_frame_t *frame);  // 实际写 Serial1
 void proto_on_event(const proto_frame_t *frame);     // 解析完成的事件分发
 
-// ---- 子板心跳（任何来自子板的帧都会刷新时间戳）----
-void proto_note_sub_rx(void);
-bool sub_comm_online(void);            // true = COMM_DEAD_TIMEOUT_MS 内有收到子板帧
-uint32_t sub_comm_last_rx_ms(void);    // 最近一次收到子板帧的 millis()
+// ---- 子板心跳（只有"子板事件帧"0x81~0x8F 会刷新时间戳）----
+bool     proto_is_sub_event(uint8_t type);  // true = 属于子板 → 底板的事件（0x81~0x8F）
+void     proto_note_sub_rx(void);
+bool     sub_comm_online(void);            // true = COMM_DEAD_TIMEOUT_MS 内有收到子板事件帧
+uint32_t sub_comm_last_rx_ms(void);        // 最近一次收到子板事件帧的 millis()
+uint16_t sub_comm_foreign_frames(void);    // 被 guard 丢弃的"非子板帧"个数（>0 = 这条线不干净）
+
+// ---- 自检请求闩锁（P4：区分"复检上报"与"子板自己重启"）----
+// 底板每次 proto_send(CMD_SELF_TEST) 会自动置位；子板随后回的 EVT_READY 属于**复检上报**，
+// 被本函数取走即清空（一次请求只对应一帧）。若取不到却收到 EVT_READY，说明子板是**自己重启**的。
+bool proto_take_selftest_ready(void);

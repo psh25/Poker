@@ -143,7 +143,7 @@ v4.0（2026-09-16）修订（**低功耗 A 级 + 引脚更正**）：
    实现上由 `vDealTask` 在**每局开始时统一使能一次**（`chassis_enable_driver()`），不依赖"转到才使能"：
     否则本局第一张牌恰好不用转动（`chassis_at_angle()` 命中）时整局都不会使能，转盘全程自由。
    新增 CLI `power`（查看 CPU/驱动/蓝牙状态）与 `power motor on|off`（手动强制，便于验证）。
-③ **CPU 按状态降频**：IDLE 且蓝牙未连接时 80MHz；DEALING / GAME_ACTIVE / 蓝牙已连接时 240MHz。
+③ **CPU 按状态降频**（⚠️ **2026-09-18 已关闭，见 v4.4**）：IDLE 且蓝牙未连接时 80MHz；DEALING / GAME_ACTIVE / 蓝牙已连接时 240MHz。
    经典 ESP32 在 80MHz 与 240MHz 下 **APB 都是 80MHz**（Arduino 核心 `calculateApb()`：freq ≥ 80 → 80MHz），
    所以 UART 115200、屏幕 SPI 10MHz、`millis()`/`micros()` 全部不受影响——降频只改"代码跑多快"，不引入时序错误。
 ④ **蓝牙省电**：`esp_bt_sleep_enable()`（控制器休眠）+ 广播间隔放宽到 `BLE_ADV_INTERVAL_UNITS`(160 = 100ms，库默认 20ms)，
@@ -163,6 +163,43 @@ v4.1（2026-09-17）修订（**自检结果只收"能自动判定"的项目**）
 ② 子板 `SUB_ST_*` 精简为 2 项：摄像头校准回应（真判定）、与底板串口收到数据；删除电机微动、摄像头串口"已初始化"、
    光电门静态电平三项。两板位定义（`SubBoard/include/protocol.h` 与 `BottomBoard/include/protocol.h`）同步修改。
 ③ 串口汇总与**屏幕自检汇总屏**都按新位图重画，只列可判定项；观察项另起一行说明。
+
+v4.2（2026-09-18）修订（**子板在线判定收口**）：
+以前是"**收到任何帧都算子板在线**"，于是只要底板自己发出的命令被回环（TX/RX 短接）或有人往这条线上灌帧，
+**子板断电也会显示 ONLINE**，开局前的在线检查形同虚设；这些回波帧还会进 `xSubboardRxQueue`，把真实事件挤掉。
+① **底板加 guard（与子板对称）**：只接受"子板 → 底板"的事件帧（`PROTO_SUB_EVT_MIN/MAX` = 0x81~0x8F）；
+   命令帧（0x01~0x06）、0x00、0x90+ 一律丢弃——**不刷新在线时间、不进事件队列**，并累计计数供排查
+   （前 3 次打印 `[BOT] guard: drop type=0x..`，底板 CLI `subboard` 也会显示累计值）。
+② **在线证据只看子板事件帧**：`proto_is_sub_event()` + `proto_note_sub_rx()` 组合使用；开机自检的握手回调
+   （`selftest_rx_cb`）同样只认事件帧，避免回环时误报"子板链路 OK"。
+③ **掉线阈值 3s → 8s**：子板自检是阻塞式的（摄像头校准 3s + 电机微动 0.5s ≈ 3.6s 不回帧），
+   原来的 3s 会把自检误判成掉线（假 `OFFLINE`，且此时开局会被 `sub offline` 拒掉）。8s 留 ~2× 余量，
+   以后调大子板 `CAM_CALIB_WAIT_MS`/自检时长时，这里要跟着调大（见 `BottomBoard/include/app_config.h` 注释）。
+④ CLI `sim <type>` 增加前置校验：只能注入事件帧（0x81~0x8F），注入命令类型会提示改用 `sub <cmd>`。
+
+v4.3（2026-09-18）修订（**掉线 / 子板重启的主动收口**）：
+以前掉线只打印一行、只在开局前拒绝新局，进行中的一局要等各项等待超时（最长 8s）才收口——这段时间子板
+可能还在推牌/转盘，或者底板在等一个永远不会来的事件。
+① **P3 运行中掉线**：监控任务在"在线 → 掉线"的跳变沿、且状态不是 IDLE 时，调用新增的
+   `deal_abort_remote("sub offline")` —— 记错误 + 刷新屏幕 + 尽力发 `CMD_STOP` + `motion_abort_request()`
+   中止底盘转动与各项等待，最后停在 DEALING 等编码器按下重置（与其它发牌错误同一出口）。
+② **P4 子板中途重启**：`EVT_READY` 有两个来源——① 子板开机自检完成（= 子板刚复位）② 底板请求
+   `CMD_SELF_TEST` 后的复检上报。新增"自检请求闩锁"（`proto_send(CMD_SELF_TEST)` 自动置位、
+   `proto_take_selftest_ready()` 取走即清空、15s 兜底窗口）区分两者；判为 ① 且底板不在 IDLE 时
+   同样调用 `deal_abort_remote("sub reset")`。
+③ `deal_abort_remote()` 放在 `tasks_deal.cpp`（发牌状态的唯一属主），CLI `sim`/其他任务不直接改发牌状态；
+   它是**异常路径**，与发牌任务可能并发，因此只写错误标志/错误串并发布快照，不再继续发牌。
+
+v4.4（2026-09-18）修订（**取消底板 CPU 降频**）：
+`BOT_CPU_SCALE_ENABLE` 改为 **0**，底板固定跑 240MHz。原因：
+① "运行中**动态切主频**"（240 ↔ 80）且 BLE 控制器同时在跑，是本项目里唯一没经过长期验证的新路径——
+   BT 在切频后需要重新校准 PHY，而 Arduino 的 `setCpuFrequencyMhz()` 不走 `esp_pm`，不会替 BT 做这一步；
+   排查底板偶发重启（闪屏 + 重启循环）期间先关掉、排除变量。
+② 底板降频的省电收益本来就远小于子板（子板才是常驻待机电流的大头），关掉的代价很小。
+**保留不变**：底盘驱动在"不锁轴时段"断电、蓝牙控制器休眠 + 广播间隔 100ms、子板侧省电
+（主循环 1ms 节拍 + `SUB_CPU_MHZ`(80MHz) + 发牌电机 STBY 待机）。
+`power_set_cpu()` 保留备用；监控任务开机后会打印一次 `[PWR] cpu scaling DISABLED -> running at 240 MHz` 便于核对；
+要恢复降频把该宏改回 1 即可（建议恢复后先跑一段时间观察稳定性）。
 
 与 v1 的逐项差异见 [architecture_v2_diff.md](architecture_v2_diff.md)；子板详细设计见 [subboard_architecture.md](subboard_architecture.md)。
 
@@ -467,8 +504,10 @@ flowchart TD
 | 子板 → 底板 | `EVT_ACK` | 命令确认回执（调试用，data=原 type+原 data） |
 | 子板 → 底板 | `EVT_STATUS` | 状态回执（心跳应答）：data=[state, error, countLo, countHi] |
 
-> 心跳（v2.7）：底板监控任务每 `COMM_HEARTBEAT_MS`(1s) 发 `CMD_STATUS_QUERY`，子板回 `EVT_STATUS`；
-> `COMM_DEAD_TIMEOUT_MS`(3s) 内没收到任何子板帧即判定掉线，串口打印 `[MON] sub board OFFLINE`，可用底板 CLI `subboard` 查询。
+> 心跳（v2.7，v4.2 收口）：底板监控任务每 `COMM_HEARTBEAT_MS`(1s) 发 `CMD_STATUS_QUERY`，子板回 `EVT_STATUS`；
+> **只有子板事件帧（0x81~0x8F）才算在线证据**（`proto_is_sub_event()`），命令类回波/外来帧由底板 guard 丢弃；
+> `COMM_DEAD_TIMEOUT_MS`(**8s**，> 子板阻塞自检 ≈3.6s) 内没收到子板事件帧即判定掉线，串口打印 `[MON] sub board OFFLINE`，
+> 可用底板 CLI `subboard` 查询（同时显示被 guard 丢弃的帧数）。
 
 ### 7.4 实时上报与统一上传原则
 
@@ -552,7 +591,7 @@ flowchart TD
 | 底座步进堵转/超时 | `chassis_run_relative` 软件超时 | 停发脉冲并 `disableOutputs()` 断电，屏幕告警（DIAG 中断未接，暂无 SG_RESULT） |
 | 驱动过热 | 暂未实现（无 UART 读温度） | 依赖驱动散热与电源裕量，必要时外接测温 |
 | 零点传感器失效 | 归零流程步数超时保护 | 锁死电机，禁止任何旋转动作，屏幕上报故障代码 |
-| 滑环通讯掉线 | 心跳 `COMM_HEARTBEAT_MS`(1s) + 掉线阈值 `COMM_DEAD_TIMEOUT_MS`(3s) | 发牌前检查在线状态，离线直接拒绝启动并报 `sub offline`；发牌中掉线由各项等待超时兜底 |
+| 滑环通讯掉线 | 心跳 `COMM_HEARTBEAT_MS`(1s) + 掉线阈值 `COMM_DEAD_TIMEOUT_MS`(**8s**)；在线证据只认子板事件帧 0x81~0x8F（底板 guard 丢弃命令回波/外来帧） | 发牌前检查在线状态，离线直接拒绝启动并报 `sub offline`；**发牌中掉线立即收口**（`deal_abort_remote()`：记错误 + 发 `CMD_STOP` + 中止转动/等待，等编码器重置）；子板中途重启（非 IDLE 收到 `EVT_READY`）同样收口 |
 | 步进失步校准 | 暂未实现（INDEX 引脚未接） | 如需校准需硬件提供一圈索引信号 |
 | 电机干扰防护 | 编码器中断内两级过滤（同方向间隔过滤 + 非法跳变清零）；光电门用**电平轮询 + 时间去抖**（刻意不用边沿中断）；串口全帧 CRC | 防止霍尔/编码器误触发与串口乱码 |
 

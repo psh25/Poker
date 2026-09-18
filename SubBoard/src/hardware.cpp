@@ -104,7 +104,7 @@ void sub_hardware_init(void) {
 
     // 摄像头：这里的初始化已挪到 sub_camera_trigger()（首次触发时才配置）。
     // 原因：TRIG 只在真正截图时才有用，平时保持高阻，免得开机就给摄像头发假触发。
-    //       （TRIG 已从 GPIO20 换到 GPIO4，见 pins_config.h。）
+    //       （TRIG 当前为 GPIO35，见 pins_config.h。）
 
     // 与底板通信串口（2 线 UART）
     Serial1.begin(SUB_UART_BAUD, SERIAL_8N1, SUB_UART_RX_PIN, SUB_UART_TX_PIN);

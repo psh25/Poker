@@ -41,8 +41,11 @@ export const HOST_EVT = {
   PLAYED: 0x94,
 } as const
 
-// 底板状态机：0待命 1发牌中 2牌局中 3牌局结束
-export const STATE_NAMES = ['待命', '发牌中', '牌局中', '牌局结束']
+// 底板状态机只有三态（BottomBoard/include/state_machine.h 的 system_state_t）：
+//   0 = IDLE（待命）/ 1 = DEALING（发牌中）/ 2 = GAME_ACTIVE（牌局中）
+// 以前这里多列了一个"牌局结束"，固件并没有这个状态，0x91 永远不会报 3。
+// 遇到表外的值由调用方兜底显示"状态N"。
+export const STATE_NAMES = ['待命', '发牌中', '牌局中']
 
 // CRC-8（多项式 0x07，初值 0x00，与固件 proto_crc8 一致）
 export function crc8(buf: number[]): number {

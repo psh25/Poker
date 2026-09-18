@@ -152,11 +152,9 @@ void proto_on_event(const proto_frame_t *frame) {
     if (frame->type == EVT_READY) {
         if (frame->len >= 2) {
             uint16_t b = (uint16_t)(frame->data[0] | ((uint16_t)frame->data[1] << 8));
-            Serial.printf("[BOT] SUB-READY: bits=0x%04X |%s%s%s%s%s%s\n", (unsigned)b,
-                          (b & SUB_ST_MOTOR)     ? " motor"     : "",
+            // 只打印"子板自己能判定"的项目（位定义见 SubBoard/include/protocol.h）
+            Serial.printf("[BOT] SUB-READY: bits=0x%04X |%s%s%s\n", (unsigned)b,
                           (b & SUB_ST_CAM_CALIB) ? " cam-calib" : "",
-                          (b & SUB_ST_CAM_UART)  ? " cam-uart"  : "",
-                          (b & SUB_ST_PHOTO)     ? " photo"     : "",
                           (b & SUB_ST_HOST_UART) ? " host-uart" : "",
                           (b & SUB_ST_DONE)      ? " done"      : "");
         } else {

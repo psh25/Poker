@@ -63,12 +63,10 @@
 
 // ================= 开机自检结果位图（EVT_READY 的 data，共 2 字节）=================
 // 子板自检结果，随 EVT_READY 上报；data[0] = 低 8 位，data[1] = 高 8 位。
-// bit = 1 表示“该项已执行且未发现异常”；人眼确认项置 1 = “动作已执行，待人工观察”。
-#define SUB_ST_MOTOR      0x0001u  // bit0 发牌电机：已执行正反转微动（需人眼确认）
-#define SUB_ST_CAM_CALIB  0x0002u  // bit1 摄像头校准：校准指令已发出并收到回应
-#define SUB_ST_CAM_UART   0x0004u  // bit2 摄像头串口：已初始化（子板可下发文本指令）
-#define SUB_ST_PHOTO      0x0008u  // bit3 光电门：已读到有效电平（当前电平已记录）
-#define SUB_ST_HOST_UART  0x0010u  // bit4 与底板串口：自检期间收到过底板数据
+// ⚠️ 规则（2026-09-17）：**只收"子板自己能判定成败"的项目**（与 SubBoard/include/protocol.h 保持一致）。
+//    电机微动、光电门静态电平这些只能靠人看/听的项**不置位**，绝不会因为"动过了"就报 OK。
+#define SUB_ST_CAM_CALIB  0x0001u  // bit0 摄像头校准：校准指令已发出且收到非 ERROR 回应（真判定）
+#define SUB_ST_HOST_UART  0x0002u  // bit1 与底板串口：自检期间收到过底板数据（真判定）
 #define SUB_ST_DONE       0x0080u  // bit7 自检流程完整执行完毕
 
 // 底板 → 子板：命令（0x01~0x0F）

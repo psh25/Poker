@@ -1,16 +1,17 @@
-"""OpenMV H7 Plus triggered card recognition, no CNN, no no-card class.
+"""OpenMV H7 Plus serial-terminal-triggered card recognition.
 
 Deploy with cards_hybrid_core.py, cards_fast_config.py and a matching hybrid bank.
-P9 falling edge: fresh capture -> native pixel difference -> same-frame refinement -> at
-most one retry. Results and diagnostics are printed through the USB IDE
-terminal. UNKNOWN means insufficient evidence, NEVER "no card".
+In OpenMV IDE's Tools > Open Terminal > Serial Port window, type CAPTURE and
+press Enter: fresh capture -> native pixel difference -> same-frame refinement.
+The main IDE output pane is read-only and cannot send this command. Results and
+diagnostics are printed through the interactive USB serial terminal.
+UNKNOWN means insufficient evidence, NEVER "no card".
 The 900 ms deadline is cooperative: an individual native call cannot be
 interrupted. Measure TIME_MS on the actual H7 Plus before acceptance.
 """
 import gc
 import os
 import time
-from machine import Pin
 import cards_fast_config as C
 import cards_hybrid_core as V
 
@@ -311,8 +312,7 @@ def draw_trigger_debug(frame, result, sequence, profile):
                  else DEBUG_CANDIDATE_COLOR)
         box = info["box"]
         frame.draw_rectangle(box, color=color)
-    # snapshot() pushes the previous application frame to the IDE stream.
-    # Explicitly flush this annotated final frame so it appears on this trigger.
+    # flush() 只更新IDE调试帧缓存；独立串口终端不会自动收到图像。
     if hasattr(frame, "flush"):
         frame.flush()
 
@@ -330,7 +330,7 @@ def recognize_trigger(cam, bank, trigger_ms):
                 for unused in range(DISCARD_AFTER_TRIGGER):
                     cam.snapshot()
                     budget.check()
-            frame = cam.snapshot()  # Acquired AFTER trigger/debounce, not preview.
+            frame = cam.snapshot()  # 收到CAPTURE后采集新帧，不复用旧图。
             budget.check()
             profile["capture_ms"] += time.ticks_diff(time.ticks_ms(), start)
             profile["attempts"] += 1
@@ -383,68 +383,48 @@ def main():
     sample_state = prepare_sample_storage()
     cam, camera, leds = V.start_camera(False)
     bank = V.load_bank(STRICT_TEMPLATE_COVERAGE, MAX_TEMPLATES_PER_LABEL)
-    pin = Pin(C.TRIGGER_PIN, Pin.IN, Pin.PULL_UP)
-    # IRQ only latches timestamp. Never perform camera/I/O work in interrupt.
-    state = [0, 0, 0]  # pending, first falling-edge time, armed
-
-    def on_falling(unused):
-        if state[2] and not state[0]:
-            state[1] = time.ticks_ms()
-            state[0] = 1
-            state[2] = 0
-
-    pin.irq(trigger=Pin.IRQ_FALLING, handler=on_falling)
-    print("READY: P9 -> GND; results on USB; no no-card detection")
+    print("READY: type CAPTURE + Enter in Open Terminal / Serial Port")
     print("Camera:", camera)
     print("Difference-score thresholds are provisional; check TIME_MS on hardware.")
-    print("IDE trigger-frame overlay:", DEBUG_DRAW_TRIGGER_FRAME)
+    print("Frame overlay (not streamed to serial terminal):", DEBUG_DRAW_TRIGGER_FRAME)
     sequence = 0
-    high_since = None
     gc.collect()
     while True:
-        now = time.ticks_ms()
-        if state[0]:
-            # Button must still be low after debounce; bounce is discarded.
-            if time.ticks_diff(now, state[1]) < C.BUTTON_DEBOUNCE_MS:
-                time.sleep_ms(2)
-                continue
-            trigger_ms = state[1]
-            if pin.value() == 0:
-                sequence += 1
-                debug_frame = None
-                try:
-                    result, profile, debug_frame = recognize_trigger(cam, bank, trigger_ms)
-                except Exception as error:
-                    result = {"label": "ERROR", "reason": repr(error), "groups": {}}
-                    profile = {}
-                # Leave a small reserve for the primary USB result lines.
-                if time.ticks_diff(time.ticks_ms(), trigger_ms) >= RESULT_BUDGET_MS - OUTPUT_RESERVE_MS:
-                    result["label"], result["reason"] = "UNKNOWN", "TIMEOUT"
-                usb_start = time.ticks_ms()
-                print_result(result)
-                profile["usb_result_ms"] = time.ticks_diff(time.ticks_ms(), usb_start)
-                profile["total_ms"] = time.ticks_diff(time.ticks_ms(), trigger_ms)
-                profile["over_budget"] = profile["total_ms"] > RESULT_BUDGET_MS
-                if PRINT_TIMING:
-                    print("TIME_MS:%d" % profile["total_ms"])
-                try:
-                    save_test_sample(debug_frame, result, profile,
-                                     camera, sample_state)
-                except Exception as error:
-                    print("SAMPLE_ERROR:" + repr(error))
-                draw_trigger_debug(debug_frame, result, sequence, profile)
-                gc.collect()  # Idle cleanup before re-arming; not per template.
-            state[0] = 0
-            high_since = None
-        if not state[2] and not state[0]:
-            if pin.value() == 1:
-                if high_since is None:
-                    high_since = time.ticks_ms()
-                elif time.ticks_diff(time.ticks_ms(), high_since) >= C.BUTTON_DEBOUNCE_MS:
-                    state[2] = 1
-            else:
-                high_since = None
-        time.sleep_ms(2)
+        # 主窗口的串口面板只读；这里的input()仅用于IDE独立串口终端的REPL模式。
+        # 每个完整命令只触发一次，读入等待不计入识别耗时。
+        try:
+            command = input()
+        except EOFError:
+            return
+        if command.strip().upper() != "CAPTURE":
+            if command.strip():
+                print("COMMAND_ERROR: type CAPTURE and press Enter")
+            continue
+        trigger_ms = time.ticks_ms()
+        sequence += 1
+        debug_frame = None
+        try:
+            result, profile, debug_frame = recognize_trigger(cam, bank, trigger_ms)
+        except Exception as error:
+            result = {"label": "ERROR", "reason": repr(error), "groups": {}}
+            profile = {}
+        # 保留少量时间给主要的USB结果行；超时结果不能当作识别成功。
+        if time.ticks_diff(time.ticks_ms(), trigger_ms) >= RESULT_BUDGET_MS - OUTPUT_RESERVE_MS:
+            result["label"], result["reason"] = "UNKNOWN", "TIMEOUT"
+        usb_start = time.ticks_ms()
+        print_result(result)
+        profile["usb_result_ms"] = time.ticks_diff(time.ticks_ms(), usb_start)
+        profile["total_ms"] = time.ticks_diff(time.ticks_ms(), trigger_ms)
+        profile["over_budget"] = profile["total_ms"] > RESULT_BUDGET_MS
+        if PRINT_TIMING:
+            print("TIME_MS:%d" % profile["total_ms"])
+        try:
+            save_test_sample(debug_frame, result, profile,
+                             camera, sample_state)
+        except Exception as error:
+            print("SAMPLE_ERROR:" + repr(error))
+        draw_trigger_debug(debug_frame, result, sequence, profile)
+        gc.collect()  # 两次命令之间清理内存，不在模板比较时执行。
 
 
 if __name__ == "__main__":

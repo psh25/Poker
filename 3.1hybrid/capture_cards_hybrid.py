@@ -29,11 +29,10 @@ MAX_TEMPLATES_PER_LABEL = 2
 
 # Search windows may be broad; the selected glyph is cropped again before Otsu.
 CAPTURE_ROIS = {
-    "rank": (105, 25, 100, 145),
-    "suit": (105, 130, 100, 110),
-    # Keep only the stable visible JOKER lettering, without the artwork.
-    "joker": (120, 40, 50, 140),
-    "back": (170, 120, 40, 40),
+"rank": (120, 25, 100, 155),
+"suit": (120, 130, 100, 110),
+"joker": (120, 25, 80, 150),
+"back": (185, 120, 40, 40),
 }
 
 CAPTURE_VISION = {

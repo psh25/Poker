@@ -99,35 +99,21 @@ def test_plausible_face_suppresses_single_template_back(monkeypatch):
     assert "S:heart,0.910,0.010,0" in info
 
 
-def test_ide_serial_command_triggers_one_recognition(monkeypatch, capsys):
+def test_automatic_trigger_waits_three_seconds(monkeypatch):
     unused_core, unused_capture, recognize = load_modules()
-    commands = iter(("wrong", "  capture  "))
-    calls = []
+    clock = [1000]
+    sleeps = []
+    monkeypatch.setattr(recognize.time, "ticks_ms", lambda: clock[0])
+    monkeypatch.setattr(recognize.time, "ticks_diff", lambda a, b: a - b)
 
-    def next_command():
-        try:
-            return next(commands)
-        except StopIteration:
-            raise EOFError
+    def advance(ms):
+        sleeps.append(ms)
+        clock[0] += ms
 
-    monkeypatch.setattr("builtins.input", next_command)
-    monkeypatch.setattr(recognize.V, "validate_config", lambda settings: None)
-    monkeypatch.setattr(recognize.V, "ensure_storage", lambda: None)
-    monkeypatch.setattr(recognize.V, "start_camera",
-                        lambda calibration: (object(), {}, []))
-    monkeypatch.setattr(recognize.V, "load_bank",
-                        lambda strict, limit: {})
-    monkeypatch.setattr(recognize, "recognize_trigger",
-                        lambda cam, bank, trigger_ms:
-                        (calls.append(trigger_ms) or
-                         {"label": "heart_A", "reason": "OK", "groups": {}},
-                         {"attempts": 1}, None))
-    recognize.main()
-
-    output = capsys.readouterr().out
-    assert len(calls) == 1
-    assert "COMMAND_ERROR: type CAPTURE" in output
-    assert "RESULT:heart_A" in output
+    monkeypatch.setattr(recognize.time, "sleep_ms", advance)
+    assert recognize.AUTO_TRIGGER_INTERVAL_MS == 3000
+    assert recognize.wait_for_auto_trigger(1000) == 4000
+    assert sum(sleeps) == 3000
 
 
 def test_standalone_trigger_takes_exactly_one_snapshot(monkeypatch):

@@ -1,10 +1,9 @@
-"""OpenMV H7 Plus serial-terminal-triggered card recognition.
+"""OpenMV H7 Plus periodically triggered card recognition.
 
 Deploy with cards_hybrid_core.py, cards_fast_config.py and a matching hybrid bank.
-In OpenMV IDE's Tools > Open Terminal > Serial Port window, type CAPTURE and
-press Enter: fresh capture -> native pixel difference -> same-frame refinement.
-The main IDE output pane is read-only and cannot send this command. Results and
-diagnostics are printed through the interactive USB serial terminal.
+After startup, one recognition starts automatically every three seconds:
+fresh capture -> native pixel difference -> same-frame refinement. Results and
+diagnostics are printed through the OpenMV IDE USB terminal.
 UNKNOWN means insufficient evidence, NEVER "no card".
 The 900 ms deadline is cooperative: an individual native call cannot be
 interrupted. Measure TIME_MS on the actual H7 Plus before acceptance.
@@ -68,6 +67,7 @@ REASON_MAX_CHARS = 240
 INFO_MAX_CHARS = 160
 RESULT_BUDGET_MS = 900
 OUTPUT_RESERVE_MS = 15
+AUTO_TRIGGER_INTERVAL_MS = 3000
 MAX_ATTEMPTS = 1  # Current requirement: no recapture; failure emits UNKNOWN.
 RETRY_SETTLE_MS = 20
 DISCARD_AFTER_TRIGGER = 1
@@ -312,7 +312,7 @@ def draw_trigger_debug(frame, result, sequence, profile):
                  else DEBUG_CANDIDATE_COLOR)
         box = info["box"]
         frame.draw_rectangle(box, color=color)
-    # flush() 只更新IDE调试帧缓存；独立串口终端不会自动收到图像。
+    # 识别和计时完成后再刷新IDE调试帧，避免画框污染本次判决。
     if hasattr(frame, "flush"):
         frame.flush()
 
@@ -330,7 +330,7 @@ def recognize_trigger(cam, bank, trigger_ms):
                 for unused in range(DISCARD_AFTER_TRIGGER):
                     cam.snapshot()
                     budget.check()
-            frame = cam.snapshot()  # 收到CAPTURE后采集新帧，不复用旧图。
+            frame = cam.snapshot()  # 自动周期到达后采集新帧，不复用旧图。
             budget.check()
             profile["capture_ms"] += time.ticks_diff(time.ticks_ms(), start)
             profile["attempts"] += 1
@@ -377,30 +377,34 @@ def recognize_trigger(cam, bank, trigger_ms):
     return result, profile, frame
 
 
+def wait_for_auto_trigger(last_trigger_ms):
+    """等待到下一个三秒周期，并返回本次识别的开始时刻。"""
+    while True:
+        now = time.ticks_ms()
+        remaining = AUTO_TRIGGER_INTERVAL_MS - time.ticks_diff(now, last_trigger_ms)
+        if remaining <= 0:
+            return now
+        # 短间隔休眠便于在IDE中停止脚本，同时避免空转占用CPU。
+        time.sleep_ms(min(50, remaining))
+
+
 def main():
     V.validate_config(RECOGNITION_VISION)
     V.ensure_storage()
     sample_state = prepare_sample_storage()
     cam, camera, leds = V.start_camera(False)
     bank = V.load_bank(STRICT_TEMPLATE_COVERAGE, MAX_TEMPLATES_PER_LABEL)
-    print("READY: type CAPTURE + Enter in Open Terminal / Serial Port")
+    print("READY: automatic recognition every %d ms" % AUTO_TRIGGER_INTERVAL_MS)
     print("Camera:", camera)
     print("Difference-score thresholds are provisional; check TIME_MS on hardware.")
-    print("Frame overlay (not streamed to serial terminal):", DEBUG_DRAW_TRIGGER_FRAME)
+    print("IDE trigger-frame overlay:", DEBUG_DRAW_TRIGGER_FRAME)
     sequence = 0
+    last_trigger_ms = time.ticks_ms()
     gc.collect()
     while True:
-        # 主窗口的串口面板只读；这里的input()仅用于IDE独立串口终端的REPL模式。
-        # 每个完整命令只触发一次，读入等待不计入识别耗时。
-        try:
-            command = input()
-        except EOFError:
-            return
-        if command.strip().upper() != "CAPTURE":
-            if command.strip():
-                print("COMMAND_ERROR: type CAPTURE and press Enter")
-            continue
-        trigger_ms = time.ticks_ms()
+        # 周期按相邻两次识别的开始时刻计算；正常识别耗时不会额外拉长3秒间隔。
+        trigger_ms = wait_for_auto_trigger(last_trigger_ms)
+        last_trigger_ms = trigger_ms
         sequence += 1
         debug_frame = None
         try:
@@ -424,7 +428,7 @@ def main():
         except Exception as error:
             print("SAMPLE_ERROR:" + repr(error))
         draw_trigger_debug(debug_frame, result, sequence, profile)
-        gc.collect()  # 两次命令之间清理内存，不在模板比较时执行。
+        gc.collect()  # 两次自动识别之间清理内存，不在模板比较时执行。
 
 
 if __name__ == "__main__":

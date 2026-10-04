@@ -1,0 +1,52 @@
+# 上传白名单：源程序、Markdown文档、测试配置及根目录模板。
+# 其余根目录内容（截图、日志、报告、误生成文件等）默认忽略。
+/*
+!/.gitignore
+!/*.md
+!/*.py
+!/pytest.ini
+!/1.1/
+!/2.1fast/
+!/3.1hybrid/
+!/tests/
+!/templates/
+
+# 各版本只保留源程序和说明；同名配置/核心必须成套保留。
+/1.1/**
+!/1.1/**/
+!/1.1/**/*.py
+!/1.1/**/*.md
+
+/2.1fast/**
+!/2.1fast/**/
+!/2.1fast/**/*.py
+!/2.1fast/**/*.md
+
+/3.1hybrid/**
+!/3.1hybrid/**/
+!/3.1hybrid/**/*.py
+!/3.1hybrid/**/*.md
+# 3.1hybrid/templates是重复副本；正式模板统一保留在根目录templates。
+/3.1hybrid/templates/
+
+# 保留主机端测试程序及说明，不保留运行产物和样本截图。
+/tests/**
+!/tests/**/
+!/tests/**/*.py
+!/tests/**/*.md
+
+# 正式模板：PGM图像与同名JSON元数据均须上传。
+/templates/**
+!/templates/**/
+!/templates/**/*.pgm
+!/templates/**/*.json
+
+# 最后排除允许目录内的缓存、临时写入文件和备份。
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.tmp
+*.tmp.*
+*.bak
+*.new
+*~
